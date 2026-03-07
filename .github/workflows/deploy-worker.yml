@@ -1,0 +1,30 @@
+# COCOMI API Relay - Cloudflare Workerデプロイ
+# このワークフローはmainブランチへのpush時にWorkerをデプロイする
+# v1.0 作成 2026-03-07
+name: Deploy Worker
+
+on:
+  push:
+    branches: [main, master]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy to Cloudflare Workers
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          secrets: |
+            GEMINI_API_KEY
+            OPENAI_API_KEY
+            ANTHROPIC_API_KEY
+            COCOMI_AUTH_TOKEN
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COCOMI_AUTH_TOKEN: ${{ secrets.COCOMI_AUTH_TOKEN }}
