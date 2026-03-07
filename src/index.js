@@ -31,24 +31,24 @@ export default {
     }
 
     try {
-      // v1.0 - CORS検証
-      const origin = request.headers.get('Origin') || '';
-      if (!isAllowedOrigin(origin, env)) {
-        return jsonError('Forbidden: Origin not allowed', 403);
-      }
-
       // v1.0 - パスによるルーティング
       const url = new URL(request.url);
       const path = url.pathname.replace(/^\/+|\/+$/g, '');
 
-      // v1.0 - ヘルスチェック（認証不要）
+      // v1.1修正 - ヘルスチェック（認証もCORSも不要 - どこからでもアクセス可能）
       if (path === 'health' && request.method === 'GET') {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '1.0',
+          version: '1.1',
           timestamp: new Date().toISOString(),
         }));
+      }
+
+      // v1.0 - CORS検証（health以外）
+      const origin = request.headers.get('Origin') || '';
+      if (!isAllowedOrigin(origin, env)) {
+        return jsonError('Forbidden: Origin not allowed', 403);
       }
 
       // v1.0 - 認証チェック（ヘルスチェック以外は必須）

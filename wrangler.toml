@@ -8,6 +8,7 @@ compatibility_date = "2026-03-07"
 
 [vars]
 ALLOWED_ORIGIN = "https://akiyamanx.github.io"
+# 実際のWorker URL: https://cocomi-api-relay.k-akiyaman.workers.dev
 
 # Secretsはwranglerコマンドで設定（絶対にここに書かない！）
 # wrangler secret put GEMINI_API_KEY
