@@ -1,0 +1,17 @@
+{
+  "name": "cocomi-api-relay",
+  "version": "1.0.0",
+  "description": "COCOMI API中継Worker - 三姉妹APIキーを安全に管理",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": ["cocomi", "cloudflare-worker", "api-relay"],
+  "author": "akiyamanx",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

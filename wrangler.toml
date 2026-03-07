@@ -1,0 +1,16 @@
+# cocomi-api-relay - COCOMI API中継Worker
+# COCOMITalk Step 1: 全APIキーをWorkerに集約し、フロントからキーを隠す
+# v1.0 作成 2026-03-07
+
+name = "cocomi-api-relay"
+main = "src/index.js"
+compatibility_date = "2026-03-07"
+
+[vars]
+ALLOWED_ORIGIN = "https://akiyamanx.github.io"
+
+# Secretsはwranglerコマンドで設定（絶対にここに書かない！）
+# wrangler secret put GEMINI_API_KEY
+# wrangler secret put OPENAI_API_KEY
+# wrangler secret put ANTHROPIC_API_KEY
+# wrangler secret put COCOMI_AUTH_TOKEN
