@@ -2,6 +2,7 @@
 // COCOMITalkのAPI中継Worker。フロントエンド（GitHub Pages）からのリクエストを受け、
 // 各AI APIに安全に転送する。APIキーはWorkerのSecrets（環境変数）で管理。
 // v1.0 作成 2026-03-07
+// v1.2 2026-03-09 - /tts-test エンドポイント追加（OpenAI TTS音声生成）
 
 // ============================================================
 // 定数・設定
@@ -13,6 +14,7 @@ const API_ENDPOINTS = {
   openai: 'https://api.openai.com/v1/chat/completions',
   claude: 'https://api.anthropic.com/v1/messages',
   whisper: 'https://api.openai.com/v1/audio/transcriptions',
+  tts: 'https://api.openai.com/v1/audio/speech', // v1.2追加
 };
 
 // v1.0 - リトライ設定（安全ガイド準拠: 最大3回）
@@ -40,7 +42,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '1.1',
+          version: '1.2',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -75,6 +77,10 @@ export default {
           break;
         case 'whisper':
           response = await relayWhisper(request, env);
+          break;
+        case 'tts-test': // v1.2追加 - TTS声テスト
+        case 'tts':      // v1.2追加 - TTS本番用（同じ処理）
+          response = await relayTTS(request, env);
           break;
         default:
           response = jsonError(`Unknown endpoint: /${path}`, 404);
@@ -186,6 +192,48 @@ async function relayWhisper(request, env) {
 
   const data = await apiResponse.json();
   return jsonResponse(data, apiResponse.status);
+}
+
+// v1.2追加 - OpenAI TTS API中継（テキスト→音声変換）
+// リクエスト: { text, voice, speed, model }
+// レスポンス: audio/mpeg（mp3バイナリ）
+async function relayTTS(request, env) {
+  const body = await request.json();
+
+  // バリデーション
+  const allowedVoices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+  const text = (body.text || '').trim();
+  const voice = body.voice || 'alloy';
+  const speed = Number(body.speed) || 1.0;
+  const model = body.model || 'tts-1';
+
+  if (!text) return jsonError('text は必須です', 400);
+  if (text.length > 500) return jsonError('text は500文字以内にしてください', 400);
+  if (!allowedVoices.includes(voice)) {
+    return jsonError(`voice は ${allowedVoices.join(', ')} のいずれかです`, 400);
+  }
+  if (speed < 0.25 || speed > 4.0) return jsonError('speed は 0.25〜4.0 の範囲です', 400);
+
+  // OpenAI TTS APIに転送
+  const apiResponse = await fetchWithRetry(API_ENDPOINTS.tts, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({ model, input: text, voice, speed, response_format: 'mp3' }),
+  });
+
+  // 音声バイナリをそのまま返す
+  if (!apiResponse.ok) {
+    const errData = await apiResponse.json().catch(() => ({}));
+    return jsonError(errData.error?.message || 'TTS API error', apiResponse.status);
+  }
+
+  return new Response(apiResponse.body, {
+    status: 200,
+    headers: { 'Content-Type': 'audio/mpeg' },
+  });
 }
 
 // ============================================================
