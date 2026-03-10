@@ -353,19 +353,16 @@ async function summarizeWithAI(topic, rawHistory, env) {
     .join('\n')
     .substring(0, 2000);
 
-  const prompt = `あなたは会議記録を要約するアシスタントです。
-以下の会議記録を読み、JSON形式のみで回答してください。
-説明文やマークダウンは不要です。JSONのみ出力してください。
+  const prompt = `会議記録の要約をJSON形式で出力してください。
+JSON以外は一切出力しないでください。前置きも説明も不要です。
 
 議題: ${topic}
 
 会議記録:
 ${historyText}
 
-出力形式（このJSONのみ出力）:
-{"summary":"会議の要約を100文字以内で","decisions":["決定事項1","決定事項2"]}
-
-決定事項がなければ "decisions": [] としてください。`;
+以下の形式で出力:
+{"summary":"100文字以内の要約","decisions":["決定事項1","決定事項2"]}`;
 
   const apiUrl = `${API_ENDPOINTS.gemini}/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
   const res = await fetch(apiUrl, {
@@ -373,11 +370,7 @@ ${historyText}
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        maxOutputTokens: 256,
-        temperature: 0.1,
-        responseMimeType: 'application/json',
-      },
+      generationConfig: { maxOutputTokens: 300, temperature: 0.1 },
     }),
   });
 
@@ -385,15 +378,14 @@ ${historyText}
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
   if (!text) throw new Error('AI応答が空');
-  // まずそのままJSONパースを試みる（responseMimeTypeで素のJSONが返るはず）
-  try {
-    return JSON.parse(text);
-  } catch (_) {
-    // フォールバック: ```json ... ``` のフェンスからJSON抽出
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('JSON抽出失敗: ' + text.substring(0, 80));
-    return JSON.parse(jsonMatch[0]);
-  }
+  // JSON抽出: summaryキーを含む{...}ブロックを探す
+  const cleaned = text.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+  const jsonMatch = cleaned.match(/\{[^{}]*"summary"[^{}]*\}/s);
+  if (jsonMatch) return JSON.parse(jsonMatch[0]);
+  // それでもダメなら最初の{...}を試す
+  const anyJson = cleaned.match(/\{[\s\S]*\}/);
+  if (anyJson) return JSON.parse(anyJson[0]);
+  throw new Error('JSON抽出失敗: ' + text.substring(0, 120));
 }
 
 // DELETE /memory — 記憶を1件削除（bodyにkeyを指定）
