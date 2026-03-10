@@ -73,13 +73,10 @@ export async function handleSearch(request, env) {
  * @returns {object} { results, query, totalCount }
  */
 async function searchBrave(query, count, env) {
-  // URLパラメータ構築
+  // URLパラメータ構築（シンプルに必須パラメータのみ）
   const params = new URLSearchParams({
     q: query,
     count: String(count),
-    search_lang: 'ja',        // 日本語優先
-    result_filter: 'web',     // ウェブ検索結果のみ
-    text_decorations: 'false', // HTMLタグなしのプレーンテキスト
   });
 
   const apiUrl = `${BRAVE_SEARCH_URL}?${params.toString()}`;
