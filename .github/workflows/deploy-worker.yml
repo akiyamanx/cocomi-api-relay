@@ -1,30 +1,72 @@
-# COCOMI API Relay - Cloudflare Workerデプロイ
-# このワークフローはmainブランチへのpush時にWorkerをデプロイする
-# v1.0 作成 2026-03-07
+# COCOMI API Relay - Cloudflare Worker自動デプロイ＋CI
+# このワークフローはmasterブランチへのpush時にWorkerをデプロイする
+# v1.0 2026-03-07 - 初期作成
+# v2.0 2026-03-10 - CI 500行チェック＋LINE通知＋KV対応
 name: Deploy Worker
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
 
 jobs:
-  deploy:
+  ci-and-deploy:
     runs-on: ubuntu-latest
-    name: Deploy to Cloudflare Workers
+    name: CI + Deploy to Cloudflare Workers
     steps:
       - uses: actions/checkout@v4
 
+      # COCOMI CI — 500行チェック（安全ガイド準拠）
+      - name: COCOMI CI - 500行チェック
+        run: |
+          echo "🔍 COCOMI CI: ファイル行数チェック開始"
+          FAIL=0
+          for f in src/*.js; do
+            LINES=$(wc -l < "$f")
+            if [ "$LINES" -gt 500 ]; then
+              echo "❌ $f: ${LINES}行（500行超過！）"
+              FAIL=1
+            else
+              echo "✅ $f: ${LINES}行"
+            fi
+          done
+          if [ "$FAIL" -eq 1 ]; then
+            echo "::error::COCOMI CI失敗: 500行超過ファイルあり"
+            exit 1
+          fi
+          echo "✅ COCOMI CI: 全ファイル500行以内！"
+
+      # Cloudflare Workerデプロイ
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
-          secrets: |
-            GEMINI_API_KEY
-            OPENAI_API_KEY
-            ANTHROPIC_API_KEY
-            COCOMI_AUTH_TOKEN
+
+      # LINE通知（成功時）
+      - name: LINE通知（成功）
+        if: success()
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          COCOMI_AUTH_TOKEN: ${{ secrets.COCOMI_AUTH_TOKEN }}
+          LINE_TOKEN: ${{ secrets.LINE_NOTIFY_TOKEN }}
+        run: |
+          if [ -n "$LINE_TOKEN" ]; then
+            MSG="✅ cocomi-api-relay デプロイ成功！
+          📦 commit: ${GITHUB_SHA::7}
+          🌐 https://cocomi-api-relay.k-akiyaman.workers.dev/health"
+            curl -s -X POST https://notify-api.line.me/api/notify \
+              -H "Authorization: Bearer ${LINE_TOKEN}" \
+              -F "message=${MSG}" > /dev/null 2>&1 || true
+          fi
+
+      # LINE通知（失敗時）
+      - name: LINE通知（失敗）
+        if: failure()
+        env:
+          LINE_TOKEN: ${{ secrets.LINE_NOTIFY_TOKEN }}
+        run: |
+          if [ -n "$LINE_TOKEN" ]; then
+            MSG="❌ cocomi-api-relay デプロイ失敗！
+          📦 commit: ${GITHUB_SHA::7}
+          🔗 https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            curl -s -X POST https://notify-api.line.me/api/notify \
+              -H "Authorization: Bearer ${LINE_TOKEN}" \
+              -F "message=${MSG}" > /dev/null 2>&1 || true
+          fi
