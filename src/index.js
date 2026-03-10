@@ -8,11 +8,13 @@
 // v1.5 2026-03-10 - AI要約JSON抽出修正（indexOf/lastIndexOf方式）
 // v1.6 2026-03-10 - maxTokens 512 + summary 50chars + incomplete JSON recovery
 // v1.7 2026-03-11 - モジュール分割（memory.js, utils.js分離）+ AI要約品質改善
+// v1.8 2026-03-12 - Phase 2a リアルタイム検索（search.js追加、/searchエンドポイント）
 
 // ============================================================
 // モジュールインポート
 // ============================================================
 import { handleMemory } from './memory.js';
+import { handleSearch } from './search.js';
 import {
   isAllowedOrigin, isAuthenticated, handleCORS,
   jsonResponse, jsonError, fetchWithRetry
@@ -52,7 +54,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '1.7',
+          version: '1.8',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -72,6 +74,15 @@ export default {
       if (path === 'memory') {
         const memRes = await handleMemory(request, env);
         return handleCORS(env, memRes);
+      }
+
+      // v1.8追加 - /search はPOST対応（Phase 2a リアルタイム検索）
+      if (path === 'search') {
+        if (request.method !== 'POST') {
+          return handleCORS(env, jsonError('Method not allowed for /search', 405));
+        }
+        const searchRes = await handleSearch(request, env);
+        return handleCORS(env, searchRes);
       }
 
       // v1.0 - POSTメソッドのみ許可（API中継）
