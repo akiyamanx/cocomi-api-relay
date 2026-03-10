@@ -81,10 +81,10 @@ export async function memorySave(request, env) {
             aiDecisions = aiResult.decisions
               .filter(d => typeof d === 'string' && d.length > 3)
               .map(d => d
-                .replace(/^#{1,6}\s+\d*\.?\s*/g, '')
-                .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
-                .replace(/^[-*]\s+/g, '')
-                .replace(/\|[^|]*\|/g, '')
+                .replace(/^\s*#{1,6}\s+\d*\.?\s*/g, '')  // ## 見出し
+                .replace(/^\s*[-*]+\s+/g, '')  // - リスト / * リスト
+                .replace(/\*{1,3}/g, '')  // 残った*を全除去（太字等）
+                .replace(/\|[^|]*\|/g, '')  // |テーブル|
                 .trim()
                 .substring(0, 40))
               .filter(d => d.length > 5);
