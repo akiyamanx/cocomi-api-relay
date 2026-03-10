@@ -45,7 +45,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '1.5',
+          version: '1.6',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -345,25 +345,22 @@ async function memorySave(request, env) {
   }
 }
 
-// v1.4追加 - Gemini Flashで会議内容を要約＋決定事項抽出
-// コスト: 1回約2〜5円（安全ガイド準拠）
+// v1.5修正 - Gemini Flashで会議内容を要約＋決定事項抽出
+// maxOutputTokens:512に増加、summary50文字以内に短縮、不完全JSON補完対応
 async function summarizeWithAI(topic, rawHistory, env) {
-  // 会議履歴をテキスト化（最大2000文字に制限してトークン節約）
   const historyText = rawHistory
     .map(h => `${h.sister || '参加者'}: ${h.content}`)
     .join('\n')
     .substring(0, 2000);
 
-  const prompt = `会議記録の要約をJSON形式で出力してください。
-JSON以外は一切出力しないでください。前置きも説明も不要です。
+  const prompt = `会議記録の要約をJSON形式で出力。JSON以外は出力禁止。
 
 議題: ${topic}
-
 会議記録:
 ${historyText}
 
-以下の形式で出力:
-{"summary":"100文字以内の要約","decisions":["決定事項1","決定事項2"]}`;
+出力（JSONのみ。summaryは50文字以内。decisionsは各30文字以内）:
+{"summary":"50文字以内の要約","decisions":["決定事項"]}`;
 
   const apiUrl = `${API_ENDPOINTS.gemini}/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
   const res = await fetch(apiUrl, {
@@ -371,7 +368,7 @@ ${historyText}
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 300, temperature: 0.1 },
+      generationConfig: { maxOutputTokens: 512, temperature: 0.1 },
     }),
   });
 
@@ -379,19 +376,25 @@ ${historyText}
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
   if (!text) throw new Error('AI応答が空');
-  // JSON抽出: バッククォートフェンス・前置き文・改行を全て処理
-  // ① まず直接パース
+  // ① 直接パース
   try { return JSON.parse(text.trim()); } catch (_) {}
-  // ② ```json ... ``` を除去してパース
-  const fenceRemoved = text.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
-  try { return JSON.parse(fenceRemoved); } catch (_) {}
-  // ③ 最初の { から最後の } までを切り出してパース
-  const firstBrace = fenceRemoved.indexOf('{');
-  const lastBrace = fenceRemoved.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    try { return JSON.parse(fenceRemoved.substring(firstBrace, lastBrace + 1)); } catch (_) {}
+  // ② フェンス除去してパース
+  const clean = text.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
+  try { return JSON.parse(clean); } catch (_) {}
+  // ③ {から}まで切り出し
+  const fi = clean.indexOf('{');
+  const li = clean.lastIndexOf('}');
+  if (fi !== -1 && li > fi) {
+    try { return JSON.parse(clean.substring(fi, li + 1)); } catch (_) {}
   }
-  throw new Error('JSON抽出失敗: ' + text.substring(0, 120));
+  // ④ JSON途中切れ補完（maxTokens不足対策）
+  if (fi !== -1) {
+    const p = clean.substring(fi);
+    try { return JSON.parse(p + '"}]}'); } catch (_) {}
+    try { return JSON.parse(p + '"]}'); } catch (_) {}
+    try { return JSON.parse(p + '"}'); } catch (_) {}
+  }
+  throw new Error('JSON抽出失敗: ' + text.substring(0, 150));
 }
 
 // DELETE /memory — 記憶を1件削除（bodyにkeyを指定）
