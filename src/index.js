@@ -378,13 +378,18 @@ ${historyText}
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
   if (!text) throw new Error('AI応答が空');
-  // JSON抽出: summaryキーを含む{...}ブロックを探す
-  const cleaned = text.replace(/```json\s*/g, '').replace(/```\s*/g, '');
-  const jsonMatch = cleaned.match(/\{[^{}]*"summary"[^{}]*\}/s);
-  if (jsonMatch) return JSON.parse(jsonMatch[0]);
-  // それでもダメなら最初の{...}を試す
-  const anyJson = cleaned.match(/\{[\s\S]*\}/);
-  if (anyJson) return JSON.parse(anyJson[0]);
+  // JSON抽出: バッククォートフェンス・前置き文・改行を全て処理
+  // ① まず直接パース
+  try { return JSON.parse(text.trim()); } catch (_) {}
+  // ② ```json ... ``` を除去してパース
+  const fenceRemoved = text.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
+  try { return JSON.parse(fenceRemoved); } catch (_) {}
+  // ③ 最初の { から最後の } までを切り出してパース
+  const firstBrace = fenceRemoved.indexOf('{');
+  const lastBrace = fenceRemoved.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    try { return JSON.parse(fenceRemoved.substring(firstBrace, lastBrace + 1)); } catch (_) {}
+  }
   throw new Error('JSON抽出失敗: ' + text.substring(0, 120));
 }
 
