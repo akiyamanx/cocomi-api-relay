@@ -353,14 +353,19 @@ async function summarizeWithAI(topic, rawHistory, env) {
     .join('\n')
     .substring(0, 2000);
 
-  const prompt = `以下はCOCOMITalkの会議記録です。
+  const prompt = `あなたは会議記録を要約するアシスタントです。
+以下の会議記録を読み、JSON形式のみで回答してください。
+説明文やマークダウンは不要です。JSONのみ出力してください。
+
 議題: ${topic}
 
+会議記録:
 ${historyText}
 
-上記を踏まえて、以下のJSON形式で要約してください。他の文字は不要です。
-{"summary":"会議内容の要約（100文字以内）","decisions":["決定事項1","決定事項2"]}
-決定事項がなければdecisionsは空配列にしてください。`;
+出力形式（このJSONのみ出力）:
+{"summary":"会議の要約を100文字以内で","decisions":["決定事項1","決定事項2"]}
+
+決定事項がなければ "decisions": [] としてください。`;
 
   const apiUrl = `${API_ENDPOINTS.gemini}/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
   const res = await fetch(apiUrl, {
@@ -368,17 +373,27 @@ ${historyText}
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 256, temperature: 0.2 },
+      generationConfig: {
+        maxOutputTokens: 256,
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+      },
     }),
   });
 
   if (!res.ok) throw new Error(`Gemini API ${res.status}`);
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  // JSONを抽出（```json ... ``` のフェンスも考慮）
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('AI応答からJSONを抽出できず');
-  return JSON.parse(jsonMatch[0]);
+  if (!text) throw new Error('AI応答が空');
+  // まずそのままJSONパースを試みる（responseMimeTypeで素のJSONが返るはず）
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    // フォールバック: ```json ... ``` のフェンスからJSON抽出
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('JSON抽出失敗: ' + text.substring(0, 80));
+    return JSON.parse(jsonMatch[0]);
+  }
 }
 
 // DELETE /memory — 記憶を1件削除（bodyにkeyを指定）
