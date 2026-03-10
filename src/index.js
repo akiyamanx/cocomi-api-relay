@@ -5,6 +5,7 @@
 // v1.2 2026-03-09 - /tts-test エンドポイント追加（OpenAI TTS音声生成）
 // v1.3 2026-03-10 - Step 4 /memory エンドポイント追加（Cloudflare KVメモリー）
 // v1.4 2026-03-10 - Step 4強化: AI要約による記憶品質向上（Gemini Flash使用）
+// v1.5 2026-03-10 - AI要約JSON抽出修正（indexOf/lastIndexOf方式）
 
 // ============================================================
 // 定数・設定
@@ -44,7 +45,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '1.4',
+          version: '1.5',
           timestamp: new Date().toISOString(),
         }));
       }
