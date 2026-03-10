@@ -4,6 +4,7 @@
 // v1.0 作成 2026-03-07
 // v1.2 2026-03-09 - /tts-test エンドポイント追加（OpenAI TTS音声生成）
 // v1.3 2026-03-10 - Step 4 /memory エンドポイント追加（Cloudflare KVメモリー）
+// v1.4 2026-03-10 - Step 4強化: AI要約による記憶品質向上（Gemini Flash使用）
 
 // ============================================================
 // 定数・設定
@@ -43,7 +44,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '1.3',
+          version: '1.4',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -285,32 +286,48 @@ async function memoryGet(request, env) {
 }
 
 // POST /memory — 記憶を1件保存
+// v1.4追加: rawHistoryがあればGemini FlashでAI要約を生成してから保存
 async function memorySave(request, env) {
   try {
     const body = await request.json();
-    // バリデーション
     if (!body.topic) return jsonError('topic は必須です', 400);
-    if (!body.summary) return jsonError('summary は必須です', 400);
-    // 記憶データ構築
+
+    let summary = body.summary || '';
+    let decisions = body.decisions || [];
+
+    // v1.4追加 - rawHistoryがあればAI要約で高品質な記憶を生成
+    if (body.rawHistory && body.rawHistory.length > 0 && env.GEMINI_API_KEY) {
+      try {
+        const aiResult = await summarizeWithAI(body.topic, body.rawHistory, env);
+        if (aiResult) {
+          summary = aiResult.summary || summary;
+          decisions = aiResult.decisions || decisions;
+          console.log('[Memory] AI要約成功');
+        }
+      } catch (e) {
+        // AI要約失敗時はフォールバック（従来のsummary/decisionsをそのまま使う）
+        console.warn('[Memory] AI要約失敗、フォールバック:', e.message);
+      }
+    }
+
+    if (!summary) return jsonError('summary は必須です', 400);
+
     const timestamp = Date.now();
     const key = `meeting:${timestamp}`;
     const memory = {
       key,
       topic: body.topic,
-      summary: body.summary,
-      decisions: body.decisions || [],
+      summary,
+      decisions,
       round: body.round || 1,
       lead: body.lead || null,
       mood: body.mood || 'neutral',
       createdAt: new Date(timestamp).toISOString(),
     };
-    // KVに保存
     await env.COCOMI_MEMORY.put(key, JSON.stringify(memory));
-    // インデックスに追加（最大100件。超えたら古いのを削除）
     const indexRaw = await env.COCOMI_MEMORY.get('memories:index');
     const index = indexRaw ? JSON.parse(indexRaw) : [];
     index.push(key);
-    // 100件超えたら古いものをKVからも削除
     while (index.length > 100) {
       const oldKey = index.shift();
       await env.COCOMI_MEMORY.delete(oldKey);
@@ -320,6 +337,43 @@ async function memorySave(request, env) {
   } catch (e) {
     return jsonError(`メモリー保存エラー: ${e.message}`, 500);
   }
+}
+
+// v1.4追加 - Gemini Flashで会議内容を要約＋決定事項抽出
+// コスト: 1回約2〜5円（安全ガイド準拠）
+async function summarizeWithAI(topic, rawHistory, env) {
+  // 会議履歴をテキスト化（最大2000文字に制限してトークン節約）
+  const historyText = rawHistory
+    .map(h => `${h.sister || '参加者'}: ${h.content}`)
+    .join('\n')
+    .substring(0, 2000);
+
+  const prompt = `以下はCOCOMITalkの会議記録です。
+議題: ${topic}
+
+${historyText}
+
+上記を踏まえて、以下のJSON形式で要約してください。他の文字は不要です。
+{"summary":"会議内容の要約（100文字以内）","decisions":["決定事項1","決定事項2"]}
+決定事項がなければdecisionsは空配列にしてください。`;
+
+  const apiUrl = `${API_ENDPOINTS.gemini}/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+  const res = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 256, temperature: 0.2 },
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Gemini API ${res.status}`);
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  // JSONを抽出（```json ... ``` のフェンスも考慮）
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('AI応答からJSONを抽出できず');
+  return JSON.parse(jsonMatch[0]);
 }
 
 // DELETE /memory — 記憶を1件削除（bodyにkeyを指定）
