@@ -74,12 +74,17 @@ export async function memorySave(request, env) {
         if (aiResult) {
           // v1.1追加 - AI要約品質チェック
           const validSummary = aiResult.summary && aiResult.summary.length >= 10;
-          const validDecisions = Array.isArray(aiResult.decisions)
-            && aiResult.decisions.length > 0
-            && aiResult.decisions.every(d => typeof d === 'string' && d.length <= 50);
+          // decisionsは各項目を40文字以内にトリム
+          let aiDecisions = [];
+          if (Array.isArray(aiResult.decisions) && aiResult.decisions.length > 0) {
+            aiDecisions = aiResult.decisions
+              .filter(d => typeof d === 'string' && d.length > 3)
+              .map(d => d.substring(0, 40));
+          }
+          const validDecisions = aiDecisions.length > 0;
 
-          summary = validSummary ? aiResult.summary : summary;
-          decisions = validDecisions ? aiResult.decisions : decisions;
+          summary = validSummary ? aiResult.summary.substring(0, 100) : summary;
+          decisions = validDecisions ? aiDecisions : decisions;
           aiSummary = validSummary; // summaryがAI由来かどうか
         }
       } catch (e) {
