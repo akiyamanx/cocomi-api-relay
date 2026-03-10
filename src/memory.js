@@ -91,7 +91,19 @@ export async function memorySave(request, env) {
           }
           const validDecisions = aiDecisions.length > 0;
 
-          summary = validSummary ? aiResult.summary.substring(0, 100) : summary;
+          // v1.2修正 - summaryの文末を完結させる
+          let finalSummary = validSummary ? aiResult.summary.substring(0, 100) : summary;
+          if (validSummary && finalSummary.length > 10) {
+            const endings = /[。た！だよね]$/;
+            if (!endings.test(finalSummary)) {
+              // 末尾の助詞・句読点を除去してから「について議論した」で補完
+              finalSummary = finalSummary.replace(/[をがはのにやと、]+$/, '');
+              if (!endings.test(finalSummary)) {
+                finalSummary = finalSummary + 'について議論した';
+              }
+            }
+          }
+          summary = finalSummary;
           decisions = validDecisions ? aiDecisions : decisions;
           aiSummary = validSummary; // summaryがAI由来かどうか
         }
