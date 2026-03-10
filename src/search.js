@@ -118,11 +118,29 @@ function formatResults(data) {
 
   return webResults.map((r, i) => ({
     rank: i + 1,
-    title: r.title || '',
+    title: stripHtml(r.title || ''),
     url: r.url || '',
-    // descriptionを200文字に制限（プロンプト注入時のトークン節約）
-    description: (r.description || '').substring(0, 200),
+    // v1.0.2 - HTMLタグ除去＋200文字に制限（プロンプト注入時のトークン節約）
+    description: stripHtml(r.description || '').substring(0, 200),
     // 公開日があれば含める
     date: r.page_age || r.age || null,
   }));
+}
+
+/**
+ * HTMLタグを除去（Brave APIが<strong>等を返す対策）
+ * v1.0.2追加
+ * @param {string} text - HTMLタグを含む可能性のあるテキスト
+ * @returns {string} プレーンテキスト
+ */
+function stripHtml(text) {
+  return text
+    .replace(/<[^>]*>/g, '')   // HTMLタグ除去
+    .replace(/&amp;/g, '&')    // HTMLエンティティ復元
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .trim();
 }
