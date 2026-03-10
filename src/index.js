@@ -294,23 +294,23 @@ async function memorySave(request, env) {
 
     let summary = body.summary || '';
     let decisions = body.decisions || [];
+    let aiSummary = false;
+    let aiError = null;
 
     // v1.4追加 - rawHistoryがあればAI要約で高品質な記憶を生成
     if (body.rawHistory && body.rawHistory.length > 0 && env.GEMINI_API_KEY) {
-      console.log(`[Memory] AI要約開始: rawHistory ${body.rawHistory.length}件, GEMINI_KEY存在: ${!!env.GEMINI_API_KEY}`);
       try {
         const aiResult = await summarizeWithAI(body.topic, body.rawHistory, env);
         if (aiResult) {
           summary = aiResult.summary || summary;
           decisions = aiResult.decisions || decisions;
-          console.log('[Memory] AI要約成功:', summary.substring(0, 50));
+          aiSummary = true;
         }
       } catch (e) {
-        // AI要約失敗時はフォールバック（従来のsummary/decisionsをそのまま使う）
-        console.warn('[Memory] AI要約失敗、フォールバック:', e.message);
+        aiError = e.message;
       }
     } else {
-      console.log(`[Memory] AI要約スキップ: rawHistory=${!!(body.rawHistory)}, length=${body.rawHistory?.length || 0}, GEMINI_KEY=${!!env.GEMINI_API_KEY}`);
+      aiError = `skip: rawHistory=${!!(body.rawHistory)}, len=${body.rawHistory?.length || 0}, key=${!!env.GEMINI_API_KEY}`;
     }
 
     if (!summary) return jsonError('summary は必須です', 400);
@@ -325,6 +325,8 @@ async function memorySave(request, env) {
       round: body.round || 1,
       lead: body.lead || null,
       mood: body.mood || 'neutral',
+      aiSummary,
+      aiError,
       createdAt: new Date(timestamp).toISOString(),
     };
     await env.COCOMI_MEMORY.put(key, JSON.stringify(memory));
