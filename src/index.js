@@ -3,6 +3,7 @@
 // 各AI APIに安全に転送する。APIキーはWorkerのSecrets（環境変数）で管理。
 // v1.0 作成 2026-03-07
 // v1.2 2026-03-09 - /tts-test エンドポイント追加（OpenAI TTS音声生成）
+// v1.3 2026-03-10 - Step 4 /memory エンドポイント追加（Cloudflare KVメモリー）
 
 // ============================================================
 // 定数・設定
@@ -42,7 +43,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '1.2',
+          version: '1.3',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -56,6 +57,12 @@ export default {
       // v1.0 - 認証チェック（ヘルスチェック以外は必須）
       if (!isAuthenticated(request, env)) {
         return handleCORS(env, jsonError('Unauthorized', 401));
+      }
+
+      // v1.3追加 - /memory はGET/POST/DELETE対応（POST制限の前に分岐）
+      if (path === 'memory') {
+        const memRes = await handleMemory(request, env);
+        return handleCORS(env, memRes);
       }
 
       // v1.0 - POSTメソッドのみ許可（API中継）
@@ -234,6 +241,103 @@ async function relayTTS(request, env) {
     status: 200,
     headers: { 'Content-Type': 'audio/mpeg' },
   });
+}
+
+// ============================================================
+// v1.3追加 - メモリーKV操作（Step 4: 会議メモリー）
+// KV名前空間: COCOMI_MEMORY（wrangler.tomlでバインド）
+// キー設計: "meeting:{timestamp}" = 会議記憶1件
+//           "memories:index" = 全記憶のキー一覧（配列JSON）
+// ============================================================
+
+// メモリーエンドポイントハンドラー（GET/POST/DELETE分岐）
+async function handleMemory(request, env) {
+  if (!env.COCOMI_MEMORY) {
+    return jsonError('KV namespace COCOMI_MEMORY が未設定です', 500);
+  }
+  const method = request.method;
+  if (method === 'GET') return memoryGet(request, env);
+  if (method === 'POST') return memorySave(request, env);
+  if (method === 'DELETE') return memoryDelete(request, env);
+  return jsonError('Method not allowed for /memory', 405);
+}
+
+// GET /memory — 最新N件の記憶を取得
+async function memoryGet(request, env) {
+  const url = new URL(request.url);
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '5', 10), 20);
+  try {
+    // インデックスから記憶キー一覧を取得
+    const indexRaw = await env.COCOMI_MEMORY.get('memories:index');
+    const index = indexRaw ? JSON.parse(indexRaw) : [];
+    // 最新N件のキーを取得
+    const recentKeys = index.slice(-limit);
+    // 各記憶の本体を取得
+    const memories = [];
+    for (const key of recentKeys) {
+      const raw = await env.COCOMI_MEMORY.get(key);
+      if (raw) memories.push(JSON.parse(raw));
+    }
+    return jsonResponse({ memories, total: index.length });
+  } catch (e) {
+    return jsonError(`メモリー取得エラー: ${e.message}`, 500);
+  }
+}
+
+// POST /memory — 記憶を1件保存
+async function memorySave(request, env) {
+  try {
+    const body = await request.json();
+    // バリデーション
+    if (!body.topic) return jsonError('topic は必須です', 400);
+    if (!body.summary) return jsonError('summary は必須です', 400);
+    // 記憶データ構築
+    const timestamp = Date.now();
+    const key = `meeting:${timestamp}`;
+    const memory = {
+      key,
+      topic: body.topic,
+      summary: body.summary,
+      decisions: body.decisions || [],
+      round: body.round || 1,
+      lead: body.lead || null,
+      mood: body.mood || 'neutral',
+      createdAt: new Date(timestamp).toISOString(),
+    };
+    // KVに保存
+    await env.COCOMI_MEMORY.put(key, JSON.stringify(memory));
+    // インデックスに追加（最大100件。超えたら古いのを削除）
+    const indexRaw = await env.COCOMI_MEMORY.get('memories:index');
+    const index = indexRaw ? JSON.parse(indexRaw) : [];
+    index.push(key);
+    // 100件超えたら古いものをKVからも削除
+    while (index.length > 100) {
+      const oldKey = index.shift();
+      await env.COCOMI_MEMORY.delete(oldKey);
+    }
+    await env.COCOMI_MEMORY.put('memories:index', JSON.stringify(index));
+    return jsonResponse({ success: true, key, memory });
+  } catch (e) {
+    return jsonError(`メモリー保存エラー: ${e.message}`, 500);
+  }
+}
+
+// DELETE /memory — 記憶を1件削除（bodyにkeyを指定）
+async function memoryDelete(request, env) {
+  try {
+    const body = await request.json();
+    if (!body.key) return jsonError('key は必須です', 400);
+    // KVから削除
+    await env.COCOMI_MEMORY.delete(body.key);
+    // インデックスからも除去
+    const indexRaw = await env.COCOMI_MEMORY.get('memories:index');
+    const index = indexRaw ? JSON.parse(indexRaw) : [];
+    const newIndex = index.filter(k => k !== body.key);
+    await env.COCOMI_MEMORY.put('memories:index', JSON.stringify(newIndex));
+    return jsonResponse({ success: true, deleted: body.key });
+  } catch (e) {
+    return jsonError(`メモリー削除エラー: ${e.message}`, 500);
+  }
 }
 
 // ============================================================

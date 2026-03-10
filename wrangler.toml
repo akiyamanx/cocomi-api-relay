@@ -15,3 +15,11 @@ ALLOWED_ORIGIN = "https://akiyamanx.github.io"
 # wrangler secret put OPENAI_API_KEY
 # wrangler secret put ANTHROPIC_API_KEY
 # wrangler secret put COCOMI_AUTH_TOKEN
+
+# v1.3追加 - Step 4 メモリーKV
+# 事前にKV名前空間を作成する必要あり:
+#   wrangler kv namespace create COCOMI_MEMORY
+# 作成後に表示されるidをここに貼り付ける
+[[kv_namespaces]]
+binding = "COCOMI_MEMORY"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
