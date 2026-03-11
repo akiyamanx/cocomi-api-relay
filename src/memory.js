@@ -5,6 +5,8 @@
 // v1.0 作成 2026-03-11（index.js v1.6から分離）
 // v1.1 2026-03-11 - AI要約品質改善（summary/decisions長さチェック、few-shot例追加）
 // v1.2 2026-03-11 - マークダウン記法除去＋summary文末完結指示＋プロンプト強化
+// v1.3 2026-03-11 - 一括削除（deleteAll）対応追加
+// v1.4 2026-03-11 - GET limit上限20→100引き上げ（メモリー管理UI全件表示対応）
 
 import { jsonResponse, jsonError } from './utils.js';
 
@@ -37,7 +39,8 @@ export async function handleMemory(request, env) {
 // GET /memory — 最新N件の記憶を取得
 async function memoryGet(request, env) {
   const url = new URL(request.url);
-  const limit = Math.min(parseInt(url.searchParams.get('limit') || '5', 10), 20);
+  // v1.4変更 - limit上限を100に引き上げ（メモリー管理UIで全件表示するため）
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '5', 10), 100);
   try {
     // インデックスから記憶キー一覧を取得
     const indexRaw = await env.COCOMI_MEMORY.get('memories:index');
@@ -215,14 +218,30 @@ function extractJSON(text) {
   throw new Error('JSON抽出失敗: ' + text.substring(0, 150));
 }
 
-// DELETE /memory — 記憶を1件削除（bodyにkeyを指定）
+// DELETE /memory — 記憶を削除（1件 or 全件）
+// body.action === 'deleteAll' の場合は全件削除
+// body.key がある場合は1件削除
 async function memoryDelete(request, env) {
   try {
     const body = await request.json();
+
+    // v1.3追加 - 一括削除
+    if (body.action === 'deleteAll') {
+      const indexRaw = await env.COCOMI_MEMORY.get('memories:index');
+      const index = indexRaw ? JSON.parse(indexRaw) : [];
+      const count = index.length;
+      // 全記憶を削除
+      for (const key of index) {
+        await env.COCOMI_MEMORY.delete(key);
+      }
+      // インデックスを空にする
+      await env.COCOMI_MEMORY.put('memories:index', JSON.stringify([]));
+      return jsonResponse({ success: true, deleted: count });
+    }
+
+    // 1件削除（従来の処理）
     if (!body.key) return jsonError('key は必須です', 400);
-    // KVから削除
     await env.COCOMI_MEMORY.delete(body.key);
-    // インデックスからも除去
     const indexRaw = await env.COCOMI_MEMORY.get('memories:index');
     const index = indexRaw ? JSON.parse(indexRaw) : [];
     const newIndex = index.filter(k => k !== body.key);
