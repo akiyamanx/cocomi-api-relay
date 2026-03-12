@@ -7,6 +7,7 @@
 // v1.2 2026-03-11 - マークダウン記法除去＋summary文末完結指示＋プロンプト強化
 // v1.3 2026-03-11 - 一括削除（deleteAll）対応追加
 // v1.4 2026-03-11 - GET limit上限20→100引き上げ（メモリー管理UI全件表示対応）
+// v1.5 2026-03-12 - chat記憶対応（type分岐＋チャット用AI要約プロンプト＋sister/categoryフィールド）
 
 import { jsonResponse, jsonError } from './utils.js';
 
@@ -66,15 +67,21 @@ export async function memorySave(request, env) {
     const body = await request.json();
     if (!body.topic) return jsonError('topic は必須です', 400);
 
+    // v1.5追加 - type指定（chat/meeting）
+    const type = body.type || 'meeting';
+
     let summary = body.summary || '';
     let decisions = body.decisions || [];
     let aiSummary = false;
     let aiError = null;
+    // v1.5追加 - AI要約からtopic/categoryを取得する変数
+    let aiTopic = null;
+    let aiCategory = null;
 
     // rawHistoryがあればAI要約で高品質な記憶を生成
     if (body.rawHistory && body.rawHistory.length > 0 && env.GEMINI_API_KEY) {
       try {
-        const aiResult = await summarizeWithAI(body.topic, body.rawHistory, env);
+        const aiResult = await summarizeWithAI(body.topic, body.rawHistory, env, type);
         if (aiResult) {
           // v1.1追加 - AI要約品質チェック
           const validSummary = aiResult.summary && aiResult.summary.length >= 10;
@@ -109,6 +116,9 @@ export async function memorySave(request, env) {
           summary = finalSummary;
           decisions = validDecisions ? aiDecisions : decisions;
           aiSummary = validSummary; // summaryがAI由来かどうか
+          // v1.5追加 - チャット要約のtopic/categoryをAI結果から取得
+          if (aiResult.topic) aiTopic = aiResult.topic;
+          if (aiResult.category) aiCategory = aiResult.category;
         }
       } catch (e) {
         aiError = e.message;
@@ -120,12 +130,17 @@ export async function memorySave(request, env) {
     if (!summary) return jsonError('summary は必須です', 400);
 
     const timestamp = Date.now();
-    const key = `meeting:${timestamp}`;
+    const key = `${type}:${timestamp}`;
     const memory = {
       key,
-      topic: body.topic,
+      type,
+      topic: aiTopic || body.topic,
       summary,
       decisions,
+      // v1.5追加 - チャット記憶用フィールド（meeting時はnull）
+      sister: body.sister || null,
+      category: aiCategory || body.category || null,
+      // 会議記憶用フィールド（chat時は不要だが互換性のため保持）
       round: body.round || 1,
       lead: body.lead || null,
       mood: body.mood || 'neutral',
@@ -150,31 +165,18 @@ export async function memorySave(request, env) {
   }
 }
 
-// v1.1改善 - Gemini Flashで会議内容を要約＋決定事項抽出
-// few-shot例追加、summary30〜80文字指示、decisions各30文字以内
-async function summarizeWithAI(topic, rawHistory, env) {
+// v1.1改善 - Gemini Flashで内容を要約＋決定事項抽出
+// v1.5改善 - type引数追加（chat/meeting分岐）
+async function summarizeWithAI(topic, rawHistory, env, type = 'meeting') {
   const historyText = rawHistory
-    .map(h => `${h.sister || '参加者'}: ${h.content}`)
+    .map(h => `${h.sister || h.role || '参加者'}: ${h.content}`)
     .join('\n')
     .substring(0, 2000);
 
-  // v1.2改善 - summary文末完結指示＋decisionsマークダウン禁止
-  const prompt = `会議記録を要約してJSON形式で出力してください。
-JSON以外は絶対に出力しないでください。前置き文もコードフェンスも不要です。
-
-出力形式の例:
-{"summary":"COCOMITalkの音声機能について議論し、VOICEVOXとOpenAI TTSの2系統で実装する方針に決定した","decisions":["VOICEVOXをメインTTSとして採用","OpenAI TTSをフォールバックに設定","スピード調整UIを追加"]}
-
-ルール:
-- summaryは30〜80文字の日本語。「〜した」「〜となった」等で文を完結させること
-- decisionsは具体的な決定事項のみ。各30文字以内の配列。決定事項がなければ空配列[]
-- マークダウン記法(#,**,|,-等)は使わない。プレーンテキストのみ
-- 見出しや箇条書き記号を含めない
-- JSON以外の文字を出力しない
-
-議題: ${topic}
-会議記録:
-${historyText}`;
+  // v1.5追加 - type別プロンプト
+  const prompt = type === 'chat'
+    ? _buildChatPrompt(historyText)
+    : _buildMeetingPrompt(topic, historyText);
 
   const apiUrl = `${GEMINI_API_BASE}/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
   const res = await fetch(apiUrl, {
@@ -193,6 +195,46 @@ ${historyText}`;
 
   // 6段階JSON抽出
   return extractJSON(text);
+}
+
+// v1.5追加 - チャット要約用プロンプト
+function _buildChatPrompt(historyText) {
+  return `以下の1対1チャット会話を要約してJSON形式で出力してください。
+JSON以外は絶対に出力しないでください。前置き文もコードフェンスも不要です。
+
+出力形式の例:
+{"summary":"午前中のメンテナンス作業が大変だったという話をした。疲れたけど頑張った","decisions":[],"category":"雑談","topic":"仕事の疲れについて"}
+
+ルール:
+- summaryは30〜80文字の日本語。「〜した」「〜について話した」等で文を完結させること
+- topicは会話の主題を10〜30文字で要約
+- categoryは以下から1つ選択: 開発/雑談/ドライブ/食事/晩酌/仕事/趣味/相談/家族
+- decisionsは決まったことがあれば配列で。雑談なら空配列[]
+- マークダウン記法は使わない。プレーンテキストのみ
+- JSON以外の文字を出力しない
+
+チャット会話:
+${historyText}`;
+}
+
+// v1.5追加 - 会議要約用プロンプト（従来のプロンプトを関数化）
+function _buildMeetingPrompt(topic, historyText) {
+  return `会議記録を要約してJSON形式で出力してください。
+JSON以外は絶対に出力しないでください。前置き文もコードフェンスも不要です。
+
+出力形式の例:
+{"summary":"COCOMITalkの音声機能について議論し、VOICEVOXとOpenAI TTSの2系統で実装する方針に決定した","decisions":["VOICEVOXをメインTTSとして採用","OpenAI TTSをフォールバックに設定","スピード調整UIを追加"]}
+
+ルール:
+- summaryは30〜80文字の日本語。「〜した」「〜となった」等で文を完結させること
+- decisionsは具体的な決定事項のみ。各30文字以内の配列。決定事項がなければ空配列[]
+- マークダウン記法(#,**,|,-等)は使わない。プレーンテキストのみ
+- 見出しや箇条書き記号を含めない
+- JSON以外の文字を出力しない
+
+議題: ${topic}
+会議記録:
+${historyText}`;
 }
 
 // v1.1追加 - 堅牢なJSON抽出（6段階フォールバック）
