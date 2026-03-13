@@ -32,4 +32,4 @@ id = "acef21eea4804b97ba749b71124f98c8"
 [[d1_databases]]
 binding = "DB"
 database_name = "cocomi-memory"
-database_id = "<ここにwrangler d1 createで表示されるIDを貼り付け>"
+database_id = "1b164b3b-a737-4721-aa07-86d6c821c8e6"
