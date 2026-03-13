@@ -23,3 +23,13 @@ ALLOWED_ORIGIN = "https://akiyamanx.github.io"
 [[kv_namespaces]]
 binding = "COCOMI_MEMORY"
 id = "acef21eea4804b97ba749b71124f98c8"
+
+# v1.9追加 - Step 6 Phase 2: D1データベース
+# 事前にD1データベースを作成する必要あり:
+#   wrangler d1 create cocomi-memory
+# 作成後に表示されるdatabase_idをここに貼り付ける
+# KVバインディングは移行完了後もロールバック用に残す
+[[d1_databases]]
+binding = "DB"
+database_name = "cocomi-memory"
+database_id = "<ここにwrangler d1 createで表示されるIDを貼り付け>"
