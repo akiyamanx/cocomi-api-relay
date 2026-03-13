@@ -8,6 +8,7 @@
 // v1.3 2026-03-11 - 一括削除（deleteAll）対応追加
 // v1.4 2026-03-11 - GET limit上限20→100引き上げ（メモリー管理UI全件表示対応）
 // v1.5 2026-03-12 - chat記憶対応（type分岐＋チャット用AI要約プロンプト＋sister/categoryフィールド）
+// v1.6 2026-03-13 - GET /memoryにtype/sister/categoryフィルタ追加（スマート取得）
 
 import { jsonResponse, jsonError } from './utils.js';
 
@@ -37,23 +38,49 @@ export async function handleMemory(request, env) {
   return jsonError('Method not allowed for /memory', 405);
 }
 
-// GET /memory — 最新N件の記憶を取得
+// GET /memory — 記憶を取得（フィルタ対応）
+// v1.6追加 - クエリパラメータ: type, sister, category でフィルタ可能
+// 例: GET /memory?type=chat&sister=koko&limit=3
 async function memoryGet(request, env) {
   const url = new URL(request.url);
-  // v1.4変更 - limit上限を100に引き上げ（メモリー管理UIで全件表示するため）
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '5', 10), 100);
+  // v1.6追加 - フィルタパラメータ
+  const filterType = url.searchParams.get('type') || null;
+  const filterSister = url.searchParams.get('sister') || null;
+  const filterCategory = url.searchParams.get('category') || null;
+  const hasFilter = filterType || filterSister || filterCategory;
+
   try {
-    // インデックスから記憶キー一覧を取得
     const indexRaw = await env.COCOMI_MEMORY.get('memories:index');
     const index = indexRaw ? JSON.parse(indexRaw) : [];
-    // 最新N件のキーを取得
-    const recentKeys = index.slice(-limit);
-    // 各記憶の本体を取得
-    const memories = [];
-    for (const key of recentKeys) {
-      const raw = await env.COCOMI_MEMORY.get(key);
-      if (raw) memories.push(JSON.parse(raw));
+
+    if (!hasFilter) {
+      // フィルタなし: 従来通り最新N件（メモリー管理UI等）
+      const recentKeys = index.slice(-limit);
+      const memories = [];
+      for (const key of recentKeys) {
+        const raw = await env.COCOMI_MEMORY.get(key);
+        if (raw) memories.push(JSON.parse(raw));
+      }
+      return jsonResponse({ memories, total: index.length });
     }
+
+    // フィルタあり: 新しい方から走査してlimit件集める
+    const memories = [];
+    for (let i = index.length - 1; i >= 0 && memories.length < limit; i--) {
+      const key = index[i];
+      // typeフィルタ: キープレフィックスで高速判定（KV読み取り不要）
+      if (filterType && !key.startsWith(filterType + ':')) continue;
+      const raw = await env.COCOMI_MEMORY.get(key);
+      if (!raw) continue;
+      const m = JSON.parse(raw);
+      // sister/categoryフィルタ
+      if (filterSister && m.sister !== filterSister) continue;
+      if (filterCategory && m.category !== filterCategory) continue;
+      memories.push(m);
+    }
+    // 古い順に並べ直す（プロンプト注入時に時系列が自然になる）
+    memories.reverse();
     return jsonResponse({ memories, total: index.length });
   } catch (e) {
     return jsonError(`メモリー取得エラー: ${e.message}`, 500);
