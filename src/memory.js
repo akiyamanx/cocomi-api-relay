@@ -10,6 +10,7 @@
 // v1.6 2026-03-13 - GET /memoryにtype/sister/categoryフィルタ追加（スマート取得）
 // v1.7 2026-03-13 - KV→D1（SQLite）移行。API互換を維持しストレージ層のみ差し替え
 // v1.8 2026-03-13 - クリーンアップ: handleMigrate削除（KV→D1移行完了済み）
+// v1.9 2026-03-13 - 期間指定削除サーバーサイド化（deleteByPeriod アクション追加）
 
 import { jsonResponse, jsonError } from './utils.js';
 
@@ -299,6 +300,7 @@ function extractJSON(text) {
 // ============================================================
 // DELETE /memory — 記憶を削除（D1 DELETE）
 // body.action === 'deleteAll' で全件削除
+// body.action === 'deleteByPeriod' + body.before で期間指定削除
 // body.key で1件削除
 // ============================================================
 async function memoryDelete(request, env) {
@@ -311,6 +313,19 @@ async function memoryDelete(request, env) {
       const countRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM memories').first();
       const count = countRow?.cnt || 0;
       await env.DB.prepare('DELETE FROM memories').run();
+      return jsonResponse({ success: true, deleted: count });
+    }
+
+    // v1.8追加 - 期間指定削除（before以前の記憶をSQL一発で削除）
+    if (body.action === 'deleteByPeriod') {
+      if (!body.before) return jsonError('before（ISO日時）は必須です', 400);
+      const countRow = await env.DB.prepare(
+        'SELECT COUNT(*) as cnt FROM memories WHERE created_at < ?'
+      ).bind(body.before).first();
+      const count = countRow?.cnt || 0;
+      if (count > 0) {
+        await env.DB.prepare('DELETE FROM memories WHERE created_at < ?').bind(body.before).run();
+      }
       return jsonResponse({ success: true, deleted: count });
     }
 
