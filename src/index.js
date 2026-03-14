@@ -11,11 +11,14 @@
 // v1.8 2026-03-12 - Phase 2a リアルタイム検索（search.js追加、/searchエンドポイント）
 // v1.9 2026-03-13 - Step 6 Phase 2: D1移行（/memory-migrateエンドポイント追加）
 // v2.0 2026-03-13 - クリーンアップ: /memory-migrate削除（移行完了済み）
+// v2.1 2026-03-15 - Step 6 Phase 2: /memory-search + /memory-vectorize エンドポイント追加
 
 // ============================================================
 // モジュールインポート
 // ============================================================
 import { handleMemory } from './memory.js';
+import { _rowToMemory } from './memory.js';
+import { handleMemorySearch, handleVectorizeMigration } from './vector.js';
 import { handleSearch } from './search.js';
 import {
   isAllowedOrigin, isAuthenticated, handleCORS,
@@ -56,7 +59,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '2.0',
+          version: '2.1',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -76,6 +79,18 @@ export default {
       if (path === 'memory') {
         const memRes = await handleMemory(request, env);
         return handleCORS(env, memRes);
+      }
+
+      // v2.1追加 - /memory-search はPOST対応（Step 6 Phase 2: Vectorize RAG意味検索）
+      if (path === 'memory-search' && request.method === 'POST') {
+        const searchRes = await handleMemorySearch(request, env, _rowToMemory);
+        return handleCORS(env, searchRes);
+      }
+
+      // v2.1追加 - /memory-vectorize はPOST対応（既存記憶のembedding一括生成・一時エンドポイント）
+      if (path === 'memory-vectorize' && request.method === 'POST') {
+        const migrateRes = await handleVectorizeMigration(request, env);
+        return handleCORS(env, migrateRes);
       }
 
       // v1.8追加 - /search はPOST対応（Phase 2a リアルタイム検索）

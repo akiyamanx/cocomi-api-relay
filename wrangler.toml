@@ -33,3 +33,10 @@ id = "acef21eea4804b97ba749b71124f98c8"
 binding = "DB"
 database_name = "cocomi-memory"
 database_id = "1b164b3b-a737-4721-aa07-86d6c821c8e6"
+
+# v2.1追加 - Step 6 Phase 2: Vectorize RAG（意味検索）
+# 事前にVectorizeインデックスを作成する必要あり:
+#   npx wrangler vectorize create cocomi-memory-vectors --dimensions=768 --metric=cosine
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "cocomi-memory-vectors"

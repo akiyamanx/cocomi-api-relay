@@ -11,8 +11,11 @@
 // v1.7 2026-03-13 - KV→D1（SQLite）移行。API互換を維持しストレージ層のみ差し替え
 // v1.8 2026-03-13 - クリーンアップ: handleMigrate削除（KV→D1移行完了済み）
 // v1.9 2026-03-13 - 期間指定削除サーバーサイド化（deleteByPeriod アクション追加）
+// v1.10 2026-03-15 - Step 6 Phase 2: Vectorize RAG連携（保存時embedding / 削除時ベクトル削除）
 
 import { jsonResponse, jsonError } from './utils.js';
+// v1.10追加 - Vectorize連携（embedding保存・削除）
+import { upsertVector, deleteVector, deleteVectors } from './vector.js';
 
 // ============================================================
 // Gemini API設定（AI要約用）
@@ -181,6 +184,12 @@ export async function memorySave(request, env) {
       aiSummary ? 1 : 0, aiError, createdAt
     ).run();
 
+    // v1.10追加 - Vectorize にembeddingを保存（失敗しても記憶保存は壊さない）
+    const embeddingText = `${topic} ${summary}`;
+    await upsertVector(key, embeddingText, {
+      type, sister: body.sister || '', created_at: createdAt,
+    }, env).catch(e => console.warn('[Memory] embedding保存スキップ:', e.message));
+
     // v1.7変更 - 100件制限（KV index管理→SQL COUNT+DELETE）
     const countRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM memories').first();
     if (countRow && countRow.cnt > MAX_MEMORIES) {
@@ -310,21 +319,27 @@ async function memoryDelete(request, env) {
     // 一括削除
     if (body.action === 'deleteAll') {
       // v1.7変更 - SQL一発で全件削除（KVループ→DELETE FROM）
-      const countRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM memories').first();
-      const count = countRow?.cnt || 0;
+      // v1.10追加 - Vectorizeからも削除（キー一覧を先に取得）
+      const { results } = await env.DB.prepare('SELECT key FROM memories').all();
+      const keys = results.map(r => r.key);
+      const count = keys.length;
       await env.DB.prepare('DELETE FROM memories').run();
+      await deleteVectors(keys, env).catch(() => {});
       return jsonResponse({ success: true, deleted: count });
     }
 
     // v1.8追加 - 期間指定削除（before以前の記憶をSQL一発で削除）
     if (body.action === 'deleteByPeriod') {
       if (!body.before) return jsonError('before（ISO日時）は必須です', 400);
-      const countRow = await env.DB.prepare(
-        'SELECT COUNT(*) as cnt FROM memories WHERE created_at < ?'
-      ).bind(body.before).first();
-      const count = countRow?.cnt || 0;
+      // v1.10追加 - 削除対象のキーを先に取得（Vectorize削除用）
+      const { results } = await env.DB.prepare(
+        'SELECT key FROM memories WHERE created_at < ?'
+      ).bind(body.before).all();
+      const keys = results.map(r => r.key);
+      const count = keys.length;
       if (count > 0) {
         await env.DB.prepare('DELETE FROM memories WHERE created_at < ?').bind(body.before).run();
+        await deleteVectors(keys, env).catch(() => {});
       }
       return jsonResponse({ success: true, deleted: count });
     }
@@ -333,6 +348,8 @@ async function memoryDelete(request, env) {
     if (!body.key) return jsonError('key は必須です', 400);
     // v1.7変更 - SQL一発で削除（KV delete + index filter → DELETE WHERE）
     await env.DB.prepare('DELETE FROM memories WHERE key = ?').bind(body.key).run();
+    // v1.10追加 - Vectorizeからも削除
+    await deleteVector(body.key, env).catch(() => {});
     return jsonResponse({ success: true, deleted: body.key });
   } catch (e) {
     return jsonError(`メモリー削除エラー: ${e.message}`, 500);
@@ -344,7 +361,8 @@ async function memoryDelete(request, env) {
 // ============================================================
 
 // D1行データ（snake_case）→フロント互換オブジェクト（camelCase）に変換
-function _rowToMemory(row) {
+// v1.10変更 - vector.jsからも参照するためexport
+export function _rowToMemory(row) {
   return {
     key: row.key,
     type: row.type,
