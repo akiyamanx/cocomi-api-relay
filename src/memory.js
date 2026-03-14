@@ -9,6 +9,7 @@
 // v1.5 2026-03-12 - chat記憶対応（type分岐+チャット用AI要約プロンプト+sister/categoryフィールド）
 // v1.6 2026-03-13 - GET /memoryにtype/sister/categoryフィルタ追加（スマート取得）
 // v1.7 2026-03-13 - KV→D1（SQLite）移行。API互換を維持しストレージ層のみ差し替え
+// v1.8 2026-03-13 - クリーンアップ: handleMigrate削除（KV→D1移行完了済み）
 
 import { jsonResponse, jsonError } from './utils.js';
 
@@ -41,48 +42,6 @@ export async function handleMemory(request, env) {
   if (method === 'POST') return memorySave(request, env);
   if (method === 'DELETE') return memoryDelete(request, env);
   return jsonError('Method not allowed for /memory', 405);
-}
-
-// v1.7追加 - KV→D1マイグレーション用ハンドラー（移行完了後に削除する）
-export async function handleMigrate(request, env) {
-  if (!env.COCOMI_MEMORY || !env.DB) {
-    return jsonError('KV(COCOMI_MEMORY) と D1(DB) の両方が必要です', 500);
-  }
-  try {
-    const indexRaw = await env.COCOMI_MEMORY.get('memories:index');
-    const index = indexRaw ? JSON.parse(indexRaw) : [];
-    let migrated = 0;
-    let errors = 0;
-
-    for (const key of index) {
-      try {
-        const raw = await env.COCOMI_MEMORY.get(key);
-        if (!raw) continue;
-        const m = JSON.parse(raw);
-        await env.DB.prepare(`
-          INSERT OR IGNORE INTO memories
-          (key, type, topic, summary, decisions, sister, category,
-           round, lead, mood, ai_summary, ai_error, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-          m.key, m.type || 'meeting',
-          m.topic || '', m.summary || '',
-          JSON.stringify(m.decisions || []),
-          m.sister || null, m.category || null,
-          m.round || 1, m.lead || null, m.mood || 'neutral',
-          m.aiSummary ? 1 : 0, m.aiError || null,
-          m.createdAt || new Date().toISOString()
-        ).run();
-        migrated++;
-      } catch (e) {
-        console.error(`Migration error for ${key}:`, e.message);
-        errors++;
-      }
-    }
-    return jsonResponse({ success: true, total: index.length, migrated, errors });
-  } catch (e) {
-    return jsonError(`マイグレーションエラー: ${e.message}`, 500);
-  }
 }
 
 // ============================================================

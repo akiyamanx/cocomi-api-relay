@@ -10,11 +10,12 @@
 // v1.7 2026-03-11 - モジュール分割（memory.js, utils.js分離）+ AI要約品質改善
 // v1.8 2026-03-12 - Phase 2a リアルタイム検索（search.js追加、/searchエンドポイント）
 // v1.9 2026-03-13 - Step 6 Phase 2: D1移行（/memory-migrateエンドポイント追加）
+// v2.0 2026-03-13 - クリーンアップ: /memory-migrate削除（移行完了済み）
 
 // ============================================================
 // モジュールインポート
 // ============================================================
-import { handleMemory, handleMigrate } from './memory.js';
+import { handleMemory } from './memory.js';
 import { handleSearch } from './search.js';
 import {
   isAllowedOrigin, isAuthenticated, handleCORS,
@@ -55,7 +56,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '1.9',
+          version: '2.0',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -75,12 +76,6 @@ export default {
       if (path === 'memory') {
         const memRes = await handleMemory(request, env);
         return handleCORS(env, memRes);
-      }
-
-      // v1.9追加 - /memory-migrate はKV→D1移行用（移行完了後に削除する）
-      if (path === 'memory-migrate' && request.method === 'POST') {
-        const migRes = await handleMigrate(request, env);
-        return handleCORS(env, migRes);
       }
 
       // v1.8追加 - /search はPOST対応（Phase 2a リアルタイム検索）
