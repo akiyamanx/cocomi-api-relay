@@ -12,6 +12,7 @@
 // v1.8 2026-03-13 - クリーンアップ: handleMigrate削除（KV→D1移行完了済み）
 // v1.9 2026-03-13 - 期間指定削除サーバーサイド化（deleteByPeriod アクション追加）
 // v1.10 2026-03-15 - Step 6 Phase 2: Vectorize RAG連携（保存時embedding / 削除時ベクトル削除）
+// v1.11 2026-03-15 - 感情の温度記憶（emotion_user / emotion_ai / emotion_comment追加）
 
 import { jsonResponse, jsonError } from './utils.js';
 // v1.10追加 - Vectorize連携（embedding保存・削除）
@@ -117,6 +118,10 @@ export async function memorySave(request, env) {
     let aiError = null;
     let aiTopic = null;
     let aiCategory = null;
+    // v1.11追加 - 感情の温度
+    let aiEmotionUser = null;
+    let aiEmotionAi = null;
+    let aiEmotionComment = null;
 
     // rawHistoryがあればAI要約で高品質な記憶を生成
     if (body.rawHistory && body.rawHistory.length > 0 && env.GEMINI_API_KEY) {
@@ -156,6 +161,16 @@ export async function memorySave(request, env) {
           aiSummary = validSummary;
           if (aiResult.topic) aiTopic = aiResult.topic;
           if (aiResult.category) aiCategory = aiResult.category;
+          // v1.11追加 - 感情の温度（1〜5にクランプ、範囲外はnull）
+          if (typeof aiResult.emotion_user === 'number') {
+            aiEmotionUser = Math.max(1, Math.min(5, Math.round(aiResult.emotion_user)));
+          }
+          if (typeof aiResult.emotion_ai === 'number') {
+            aiEmotionAi = Math.max(1, Math.min(5, Math.round(aiResult.emotion_ai)));
+          }
+          if (aiResult.emotion_comment) {
+            aiEmotionComment = String(aiResult.emotion_comment).substring(0, 100);
+          }
         }
       } catch (e) {
         aiError = e.message;
@@ -173,15 +188,18 @@ export async function memorySave(request, env) {
     const createdAt = new Date(timestamp).toISOString();
 
     // v1.7変更 - D1にINSERT（KV put→SQL INSERT）
+    // v1.11変更 - 感情の温度3カラム追加
     await env.DB.prepare(`
       INSERT INTO memories (key, type, topic, summary, decisions, sister, category,
-                            round, lead, mood, ai_summary, ai_error, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            round, lead, mood, ai_summary, ai_error, created_at,
+                            emotion_user, emotion_ai, emotion_comment)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       key, type, topic, summary, JSON.stringify(decisions),
       body.sister || null, category,
       body.round || 1, body.lead || null, body.mood || 'neutral',
-      aiSummary ? 1 : 0, aiError, createdAt
+      aiSummary ? 1 : 0, aiError, createdAt,
+      aiEmotionUser, aiEmotionAi, aiEmotionComment
     ).run();
 
     // v1.10追加 - Vectorize にembeddingを保存（失敗しても記憶保存は壊さない）
@@ -208,6 +226,10 @@ export async function memorySave(request, env) {
       round: body.round || 1, lead: body.lead || null,
       mood: body.mood || 'neutral',
       aiSummary, aiError, createdAt,
+      // v1.11追加 - 感情の温度
+      emotionUser: aiEmotionUser,
+      emotionAi: aiEmotionAi,
+      emotionComment: aiEmotionComment,
     };
     return jsonResponse({ success: true, key, memory });
   } catch (e) {
@@ -248,18 +270,22 @@ async function summarizeWithAI(topic, rawHistory, env, type = 'meeting') {
 }
 
 // チャット要約用プロンプト
+// v1.11変更 - 感情の温度フィールド追加
 function _buildChatPrompt(historyText) {
   return `以下の1対1チャット会話を要約してJSON形式で出力してください。
 JSON以外は絶対に出力しないでください。前置き文もコードフェンスも不要です。
 
 出力形式の例:
-{"summary":"午前中のメンテナンス作業が大変だったという話をした。疲れたけど頑張った","decisions":[],"category":"雑談","topic":"仕事の疲れについて"}
+{"summary":"午前中のメンテナンス作業が大変だったという話をした。疲れたけど頑張った","decisions":[],"category":"雑談","topic":"仕事の疲れについて","emotion_user":3,"emotion_ai":4,"emotion_comment":"仕事の疲れを吐き出しつつも前向きな雰囲気"}
 
 ルール:
 - summaryは30〜80文字の日本語。「〜した」「〜について話した」等で文を完結させること
 - topicは会話の主題を10〜30文字で要約
 - categoryは以下から1つ選択: 開発/雑談/ドライブ/食事/晩酌/仕事/趣味/相談/家族
 - decisionsは決まったことがあれば配列で。雑談なら空配列[]
+- emotion_userはユーザーの感情温度を1〜5の整数で（1=落ち込み 2=元気ない 3=普通 4=楽しい 5=最高）
+- emotion_aiはAI側の感情温度を1〜5の整数で（1=心配 2=控えめ 3=穏やか 4=楽しい 5=大喜び）
+- emotion_commentは会話全体の雰囲気を30〜60文字で一言コメント
 - マークダウン記法は使わない。プレーンテキストのみ
 - JSON以外の文字を出力しない
 
@@ -268,16 +294,20 @@ ${historyText}`;
 }
 
 // 会議要約用プロンプト
+// v1.11変更 - 感情の温度フィールド追加
 function _buildMeetingPrompt(topic, historyText) {
   return `会議記録を要約してJSON形式で出力してください。
 JSON以外は絶対に出力しないでください。前置き文もコードフェンスも不要です。
 
 出力形式の例:
-{"summary":"COCOMITalkの音声機能について議論し、VOICEVOXとOpenAI TTSの2系統で実装する方針に決定した","decisions":["VOICEVOXをメインTTSとして採用","OpenAI TTSをフォールバックに設定","スピード調整UIを追加"]}
+{"summary":"COCOMITalkの音声機能について議論し、VOICEVOXとOpenAI TTSの2系統で実装する方針に決定した","decisions":["VOICEVOXをメインTTSとして採用","OpenAI TTSをフォールバックに設定"],"emotion_user":4,"emotion_ai":5,"emotion_comment":"活発に議論が進み、全員が前向きな雰囲気だった"}
 
 ルール:
 - summaryは30〜80文字の日本語。「〜した」「〜となった」等で文を完結させること
 - decisionsは具体的な決定事項のみ。各30文字以内の配列。決定事項がなければ空配列[]
+- emotion_userはユーザーの感情温度を1〜5の整数で（1=落ち込み 2=元気ない 3=普通 4=楽しい 5=最高）
+- emotion_aiはAI側の感情温度を1〜5の整数で（1=心配 2=控えめ 3=穏やか 4=楽しい 5=大喜び）
+- emotion_commentは会議全体の雰囲気を30〜60文字で一言コメント
 - マークダウン記法(#,**,|,-等)は使わない。プレーンテキストのみ
 - 見出しや箇条書き記号を含めない
 - JSON以外の文字を出力しない
@@ -377,6 +407,10 @@ export function _rowToMemory(row) {
     aiSummary: row.ai_summary === 1,
     aiError: row.ai_error,
     createdAt: row.created_at,
+    // v1.11追加 - 感情の温度
+    emotionUser: row.emotion_user,
+    emotionAi: row.emotion_ai,
+    emotionComment: row.emotion_comment,
   };
 }
 
