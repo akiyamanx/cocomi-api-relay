@@ -15,6 +15,7 @@
 // v1.11 2026-03-15 - 感情の温度記憶（emotion_user / emotion_ai / emotion_comment追加）
 // v1.12 2026-03-15 - responseMimeType追加（Gemini JSON出力強制 — 感情フィールドnull修正）
 // v1.13 2026-03-15 - responseSchema追加（Geminiが全フィールドを確実に返すよう強制）
+// v1.14 2026-03-15 - maxOutputTokens 512→1024（感情コメント含むJSON途中切れ防止）
 
 import { jsonResponse, jsonError } from './utils.js';
 // v1.10追加 - Vectorize連携（embedding保存・削除）
@@ -283,7 +284,8 @@ async function summarizeWithAI(topic, rawHistory, env, type = 'meeting') {
       contents: [{ parts: [{ text: prompt }] }],
       // v1.12変更 - responseMimeTypeでJSON出力を強制（感情フィールド漏れ対策）
       generationConfig: {
-        maxOutputTokens: 512,
+        // v1.14変更 - maxOutputTokens 512→1024（JSON途中切れ防止）
+        maxOutputTokens: 1024,
         temperature: 0.1,
         responseMimeType: 'application/json',
         responseSchema: SUMMARY_SCHEMA,
