@@ -13,6 +13,7 @@
 // v1.9 2026-03-13 - 期間指定削除サーバーサイド化（deleteByPeriod アクション追加）
 // v1.10 2026-03-15 - Step 6 Phase 2: Vectorize RAG連携（保存時embedding / 削除時ベクトル削除）
 // v1.11 2026-03-15 - 感情の温度記憶（emotion_user / emotion_ai / emotion_comment追加）
+// v1.12 2026-03-15 - responseMimeType追加（Gemini JSON出力強制 — 感情フィールドnull修正）
 
 import { jsonResponse, jsonError } from './utils.js';
 // v1.10追加 - Vectorize連携（embedding保存・削除）
@@ -257,7 +258,8 @@ async function summarizeWithAI(topic, rawHistory, env, type = 'meeting') {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 512, temperature: 0.1 },
+      // v1.12変更 - responseMimeTypeでJSON出力を強制（感情フィールド漏れ対策）
+      generationConfig: { maxOutputTokens: 512, temperature: 0.1, responseMimeType: 'application/json' },
     }),
   });
 
