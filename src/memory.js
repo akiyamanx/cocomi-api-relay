@@ -14,6 +14,7 @@
 // v1.10 2026-03-15 - Step 6 Phase 2: Vectorize RAG連携（保存時embedding / 削除時ベクトル削除）
 // v1.11 2026-03-15 - 感情の温度記憶（emotion_user / emotion_ai / emotion_comment追加）
 // v1.12 2026-03-15 - responseMimeType追加（Gemini JSON出力強制 — 感情フィールドnull修正）
+// v1.13 2026-03-15 - responseSchema追加（Geminiが全フィールドを確実に返すよう強制）
 
 import { jsonResponse, jsonError } from './utils.js';
 // v1.10追加 - Vectorize連携（embedding保存・削除）
@@ -249,6 +250,21 @@ export async function memorySave(request, env) {
 // Gemini Flash AI要約（v1.1〜v1.5 — 変更なし）
 // ============================================================
 
+// v1.13追加 - Gemini JSON出力スキーマ（全フィールドを確実に返させる）
+const SUMMARY_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    summary: { type: 'STRING' },
+    decisions: { type: 'ARRAY', items: { type: 'STRING' } },
+    category: { type: 'STRING' },
+    topic: { type: 'STRING' },
+    emotion_user: { type: 'INTEGER' },
+    emotion_ai: { type: 'INTEGER' },
+    emotion_comment: { type: 'STRING' },
+  },
+  required: ['summary', 'topic', 'emotion_user', 'emotion_ai', 'emotion_comment'],
+};
+
 async function summarizeWithAI(topic, rawHistory, env, type = 'meeting') {
   const historyText = rawHistory
     .map(h => `${h.sister || h.role || '参加者'}: ${h.content}`)
@@ -266,7 +282,12 @@ async function summarizeWithAI(topic, rawHistory, env, type = 'meeting') {
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       // v1.12変更 - responseMimeTypeでJSON出力を強制（感情フィールド漏れ対策）
-      generationConfig: { maxOutputTokens: 512, temperature: 0.1, responseMimeType: 'application/json' },
+      generationConfig: {
+        maxOutputTokens: 512,
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+        responseSchema: SUMMARY_SCHEMA,
+      },
     }),
   });
 
