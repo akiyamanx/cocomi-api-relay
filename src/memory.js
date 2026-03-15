@@ -162,15 +162,22 @@ export async function memorySave(request, env) {
           aiSummary = validSummary;
           if (aiResult.topic) aiTopic = aiResult.topic;
           if (aiResult.category) aiCategory = aiResult.category;
-          // v1.11追加 - 感情の温度（1〜5にクランプ、範囲外はnull）
-          if (typeof aiResult.emotion_user === 'number') {
-            aiEmotionUser = Math.max(1, Math.min(5, Math.round(aiResult.emotion_user)));
+          // v1.12修正 - 感情の温度（文字列数値にも対応 — Geminiが"4"等を返す場合がある）
+          const euRaw = Number(aiResult.emotion_user);
+          if (!isNaN(euRaw) && euRaw >= 1 && euRaw <= 5) {
+            aiEmotionUser = Math.round(euRaw);
           }
-          if (typeof aiResult.emotion_ai === 'number') {
-            aiEmotionAi = Math.max(1, Math.min(5, Math.round(aiResult.emotion_ai)));
+          const eaRaw = Number(aiResult.emotion_ai);
+          if (!isNaN(eaRaw) && eaRaw >= 1 && eaRaw <= 5) {
+            aiEmotionAi = Math.round(eaRaw);
           }
           if (aiResult.emotion_comment) {
             aiEmotionComment = String(aiResult.emotion_comment).substring(0, 100);
+          }
+          // v1.12デバッグ - AI結果の感情キー確認（問題解決後に削除予定）
+          if (!aiEmotionUser && !aiEmotionAi) {
+            const keys = Object.keys(aiResult).join(',');
+            aiError = `emotion_debug: keys=[${keys}] eu=${aiResult.emotion_user} ea=${aiResult.emotion_ai}`;
           }
         }
       } catch (e) {
