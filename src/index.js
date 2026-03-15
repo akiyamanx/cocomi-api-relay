@@ -14,6 +14,7 @@
 // v2.1 2026-03-15 - Step 6 Phase 2: /memory-search + /memory-vectorize エンドポイント追加
 // v2.2 2026-03-15 - memory.js v1.11: 感情の温度記憶対応
 // v2.3 2026-03-15 - memory.js v1.12: JSON出力強制（感情フィールドnull修正）
+// v2.4 2026-03-16 - memory.js v1.15: デバッグコード削除（感情温度動作確認済み）
 
 // ============================================================
 // モジュールインポート
@@ -61,7 +62,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '2.3',
+          version: '2.4',
           timestamp: new Date().toISOString(),
         }));
       }

@@ -16,6 +16,7 @@
 // v1.12 2026-03-15 - responseMimeType追加（Gemini JSON出力強制 — 感情フィールドnull修正）
 // v1.13 2026-03-15 - responseSchema追加（Geminiが全フィールドを確実に返すよう強制）
 // v1.14 2026-03-15 - maxOutputTokens 512→1024（感情コメント含むJSON途中切れ防止）
+// v1.15 2026-03-16 - デバッグコード削除（感情温度動作確認済み、emotion_debugをai_errorに書くコード除去）
 
 import { jsonResponse, jsonError } from './utils.js';
 // v1.10追加 - Vectorize連携（embedding保存・削除）
@@ -176,11 +177,7 @@ export async function memorySave(request, env) {
           if (aiResult.emotion_comment) {
             aiEmotionComment = String(aiResult.emotion_comment).substring(0, 100);
           }
-          // v1.12デバッグ - AI結果の感情キー確認（問題解決後に削除予定）
-          if (!aiEmotionUser && !aiEmotionAi) {
-            const keys = Object.keys(aiResult).join(',');
-            aiError = `emotion_debug: keys=[${keys}] eu=${aiResult.emotion_user} ea=${aiResult.emotion_ai}`;
-          }
+
         }
       } catch (e) {
         aiError = e.message;
