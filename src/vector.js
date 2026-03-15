@@ -2,6 +2,7 @@
 // COCOMITalkのベクトル検索モジュール。記憶のembedding生成とVectorize操作を管理する。
 // Gemini text-embedding-004でembeddingを生成し、Cloudflare Vectorizeに保存・検索する。
 // v1.0 2026-03-15 - 新規作成（Step 6 Phase 2: Vectorize RAG）
+// v1.1 2026-03-15 - text-embedding-004→gemini-embedding-001移行（旧モデル廃止対応）
 
 import { jsonResponse, jsonError } from './utils.js';
 
@@ -10,12 +11,15 @@ import { jsonResponse, jsonError } from './utils.js';
 // ============================================================
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const EMBEDDING_MODEL = 'text-embedding-004';
+// v1.1変更 - text-embedding-004は廃止済み、gemini-embedding-001に移行
+// gemini-embedding-001はデフォルト3072次元、outputDimensionalityで768に指定
+const EMBEDDING_MODEL = 'gemini-embedding-001';
+const EMBEDDING_DIMENSIONS = 768;
 // v1.0 embedding対象テキストの最大文字数（500文字で十分な意味を持つ）
 const MAX_TEXT_LENGTH = 500;
 
 // ============================================================
-// Embedding生成（Gemini text-embedding-004）
+// Embedding生成（Gemini gemini-embedding-001）
 // ============================================================
 
 /**
@@ -34,10 +38,15 @@ async function generateEmbedding(text, env) {
     body: JSON.stringify({
       model: `models/${EMBEDDING_MODEL}`,
       content: { parts: [{ text: truncated }] },
+      // v1.1追加 - 768次元に指定（Vectorizeインデックスと一致させる）
+      outputDimensionality: EMBEDDING_DIMENSIONS,
     }),
   });
 
-  if (!res.ok) throw new Error(`Embedding API ${res.status}`);
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw new Error(`Embedding API ${res.status}: ${errBody.substring(0, 200)}`);
+  }
   const data = await res.json();
   return data?.embedding?.values || null;
 }
