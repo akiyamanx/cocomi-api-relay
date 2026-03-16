@@ -15,6 +15,7 @@
 // v2.2 2026-03-15 - memory.js v1.11: 感情の温度記憶対応
 // v2.3 2026-03-15 - memory.js v1.12: JSON出力強制（感情フィールドnull修正）
 // v2.4 2026-03-16 - memory.js v1.15: デバッグコード削除（感情温度動作確認済み）
+// v2.5 2026-03-16 - import.js v1.0: 記憶直接投入エンドポイント（/memory-import）追加
 
 // ============================================================
 // モジュールインポート
@@ -23,6 +24,8 @@ import { handleMemory } from './memory.js';
 import { _rowToMemory } from './memory.js';
 import { handleMemorySearch, handleVectorizeMigration } from './vector.js';
 import { handleSearch } from './search.js';
+// v2.5追加 - 記憶直接投入（裏口インポート）
+import { handleMemoryImport } from './import.js';
 import {
   isAllowedOrigin, isAuthenticated, handleCORS,
   jsonResponse, jsonError, fetchWithRetry
@@ -62,7 +65,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '2.4',
+          version: '2.5',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -82,6 +85,12 @@ export default {
       if (path === 'memory') {
         const memRes = await handleMemory(request, env);
         return handleCORS(env, memRes);
+      }
+
+      // v2.5追加 - /memory-import はPOST対応（裏から記憶直接投入）
+      if (path === 'memory-import' && request.method === 'POST') {
+        const importRes = await handleMemoryImport(request, env);
+        return handleCORS(env, importRes);
       }
 
       // v2.1追加 - /memory-search はPOST対応（Step 6 Phase 2: Vectorize RAG意味検索）
