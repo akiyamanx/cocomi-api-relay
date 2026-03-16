@@ -4,9 +4,10 @@
 // Termux curlや設定画面UIから呼び出される。
 // v1.0 2026-03-16 - 新規作成（実行計画書v24.0「次のステップ#1」）
 // v1.1 2026-03-16 - Vectorize用短縮要約生成（Gemini Flash）追加。全文はD1に、要約でembedding
+// v1.2 2026-03-17 - 重複チェック追加。Vectorize類似度検索で既存記憶と高類似度ならスキップ
 
 import { jsonResponse, jsonError } from './utils.js';
-import { upsertVector } from './vector.js';
+import { upsertVector, searchVectors } from './vector.js';
 
 // ============================================================
 // 定数
@@ -19,6 +20,8 @@ const MAX_MEMORIES = 100;
 // v1.1追加 - 短縮要約の閾値（この文字数を超えたらGemini Flashで要約してからembedding）
 const SUMMARY_SHORT_THRESHOLD = 200;
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+// v1.2追加 - 重複チェック閾値（この類似度スコア以上なら重複とみなす）
+const DUPLICATE_THRESHOLD = 0.92;
 
 // ============================================================
 // メインハンドラー: POST /memory-import
@@ -87,13 +90,18 @@ async function _importBatch(memories, env) {
     return jsonError(`一括投入は最大${MAX_BATCH_SIZE}件までです（コスト安全策）`, 400);
   }
 
-  const results = { imported: 0, errors: 0, keys: [], errorDetails: [] };
+  const results = { imported: 0, errors: 0, skipped: 0, keys: [], errorDetails: [] };
 
   for (const item of memories) {
     const result = await _insertOne(item, env);
     if (result.error) {
-      results.errors++;
-      results.errorDetails.push(result.error);
+      if (result.skipped) {
+        results.skipped++;
+        results.errorDetails.push(result.error);
+      } else {
+        results.errors++;
+        results.errorDetails.push(result.error);
+      }
     } else {
       results.imported++;
       results.keys.push(result.key);
@@ -103,6 +111,7 @@ async function _importBatch(memories, env) {
   return jsonResponse({
     success: results.imported > 0,
     imported: results.imported,
+    skipped: results.skipped,
     errors: results.errors,
     keys: results.keys,
     errorDetails: results.errorDetails.length > 0 ? results.errorDetails : undefined,
@@ -142,6 +151,24 @@ async function _insertOne(data, env) {
   // 一括投入時のキー衝突回避（1msずらす）
   const key = `${type}:${timestamp}:${Math.random().toString(36).substring(2, 6)}`;
   const createdAt = data.created_at || new Date(timestamp).toISOString();
+
+  // v1.2追加 - 重複チェック（Vectorize類似度検索）
+  // 同じ内容の記憶が既にあればスキップ（force:trueで強制投入も可能）
+  if (!data.force && env.VECTORIZE && env.GEMINI_API_KEY) {
+    try {
+      const checkText = `${topic} ${summary.substring(0, 200)}`;
+      const similar = await searchVectors(checkText, {}, 1, env);
+      if (similar.length > 0 && similar[0].score >= DUPLICATE_THRESHOLD) {
+        return {
+          error: `重複スキップ: 類似記憶あり（スコア${similar[0].score.toFixed(3)}、キー:${similar[0].id}）`,
+          skipped: true,
+        };
+      }
+    } catch (e) {
+      // 重複チェック失敗時は投入を続行（チェックできないだけで止めない）
+      console.warn('[Import] 重複チェックスキップ:', e.message);
+    }
+  }
 
   // D1に挿入
   await env.DB.prepare(`
