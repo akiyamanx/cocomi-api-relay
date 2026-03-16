@@ -3,6 +3,7 @@
 // 三姉妹APIを経由せずにD1＋Vectorizeに直接投入する。
 // Termux curlや設定画面UIから呼び出される。
 // v1.0 2026-03-16 - 新規作成（実行計画書v24.0「次のステップ#1」）
+// v1.1 2026-03-16 - Vectorize用短縮要約生成（Gemini Flash）追加。全文はD1に、要約でembedding
 
 import { jsonResponse, jsonError } from './utils.js';
 import { upsertVector } from './vector.js';
@@ -15,6 +16,9 @@ import { upsertVector } from './vector.js';
 const MAX_BATCH_SIZE = 20;
 // MAX_MEMORIESはmemory.jsと同じ値（D1全体の上限）
 const MAX_MEMORIES = 100;
+// v1.1追加 - 短縮要約の閾値（この文字数を超えたらGemini Flashで要約してからembedding）
+const SUMMARY_SHORT_THRESHOLD = 200;
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 // ============================================================
 // メインハンドラー: POST /memory-import
@@ -154,7 +158,18 @@ async function _insertOne(data, env) {
   ).run();
 
   // Vectorize にembedding保存（失敗しても記憶保存は壊さない）
-  const embeddingText = `${topic} ${summary}`;
+  // v1.1変更 - summaryが長い場合はGemini Flashで短縮要約を生成してembeddingに使う
+  // D1には全文を保持（経緯が大事！）、Vectorizeには検索用の短い要約でembedding
+  let embeddingText = `${topic} ${summary}`;
+  if (summary.length > SUMMARY_SHORT_THRESHOLD && env.GEMINI_API_KEY) {
+    try {
+      const shortSummary = await _generateShortSummary(topic, summary, env);
+      if (shortSummary) embeddingText = `${topic} ${shortSummary}`;
+    } catch (e) {
+      console.warn('[Import] 短縮要約生成スキップ:', e.message);
+      // 失敗時は全文でembedding（500文字でvector.js側がtruncateする）
+    }
+  }
   await upsertVector(key, embeddingText, {
     type, sister: sister || '', created_at: createdAt,
   }, env).catch(e => console.warn('[Import] embedding保存スキップ:', e.message));
@@ -171,4 +186,34 @@ async function _insertOne(data, env) {
   }
 
   return { key };
+}
+
+// ============================================================
+// v1.1追加 - Gemini Flash 短縮要約（Vectorize embedding用）
+// D1には全文を保持し、embeddingには短い要約を使う
+// 「経緯を残しつつ検索しやすい要約」を生成
+// ============================================================
+
+async function _generateShortSummary(topic, fullText, env) {
+  const apiUrl = `${GEMINI_API_BASE}/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+  const prompt = `以下の開発記録を、検索用の短い要約（80〜150文字）にしてください。
+重要な判断理由や失敗の学びも含めてください。JSON等は不要、プレーンテキストのみ。
+
+トピック: ${topic}
+本文:
+${fullText.substring(0, 2000)}`;
+
+  const res = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 256, temperature: 0.1 },
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Gemini API ${res.status}`);
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  return text.trim().substring(0, 200) || null;
 }
