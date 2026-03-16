@@ -21,7 +21,7 @@ const MAX_MEMORIES = 100;
 const SUMMARY_SHORT_THRESHOLD = 200;
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 // v1.2追加 - 重複チェック閾値（この類似度スコア以上なら重複とみなす）
-const DUPLICATE_THRESHOLD = 0.92;
+const DUPLICATE_THRESHOLD = 0.85;
 
 // ============================================================
 // メインハンドラー: POST /memory-import
