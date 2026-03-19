@@ -16,6 +16,7 @@
 // v2.3 2026-03-15 - memory.js v1.12: JSON出力強制（感情フィールドnull修正）
 // v2.4 2026-03-16 - memory.js v1.15: デバッグコード削除（感情温度動作確認済み）
 // v2.5 2026-03-16 - import.js v1.0: 記憶直接投入エンドポイント（/memory-import）追加
+// v2.6 2026-03-19 - relayWhisper: FormData中継時のcontent-type再構築（Invalid file format対策）
 
 // ============================================================
 // モジュールインポート
@@ -216,25 +217,54 @@ async function relayClaude(request, env) {
 }
 
 // v1.0 - Whisper API中継（音声認識）
+// v2.6修正 - FormData中継時にfile content-typeを明示再構築（Invalid file format対策）
 async function relayWhisper(request, env) {
   // Whisperはmultipart/form-dataで受け取る
   const contentType = request.headers.get('Content-Type') || '';
 
-  let formData;
-  if (contentType.includes('multipart/form-data')) {
-    // フロントからFormDataをそのまま受け取る
-    formData = await request.formData();
-  } else {
+  if (!contentType.includes('multipart/form-data')) {
     return jsonError('Whisper endpoint requires multipart/form-data', 400);
   }
 
-  // languageが指定されてなければ日本語デフォルト
-  if (!formData.get('language')) {
-    formData.set('language', 'ja');
+  const incomingForm = await request.formData();
+  const file = incomingForm.get('file');
+
+  if (!file) {
+    return jsonError('Whisper endpoint requires file field', 400);
   }
-  // モデル指定がなければwhisper-1
-  if (!formData.get('model')) {
-    formData.set('model', 'whisper-1');
+
+  // v2.6追加 - ファイル名から正しいcontent-typeを判定して再構築
+  // Cloudflare Workerのrequest.formData()がBlobのcontent-typeを
+  // application/octet-streamに変えてしまう場合がある問題への対策
+  const MIME_MAP = {
+    webm: 'audio/webm',
+    mp3: 'audio/mpeg',
+    mp4: 'audio/mp4',
+    m4a: 'audio/mp4',
+    ogg: 'audio/ogg',
+    oga: 'audio/ogg',
+    flac: 'audio/flac',
+    wav: 'audio/wav',
+  };
+
+  const fileName = file.name || 'audio.webm';
+  const ext = fileName.split('.').pop().toLowerCase();
+  const correctMime = MIME_MAP[ext] || 'audio/webm';
+
+  // ファイルデータを取り出して正しいcontent-typeで新Blobを作成
+  const arrayBuf = await file.arrayBuffer();
+  const correctedBlob = new Blob([arrayBuf], { type: correctMime });
+
+  // 新しいFormDataを構築（元のフィールドを引き継ぎ）
+  const newForm = new FormData();
+  newForm.append('file', correctedBlob, fileName);
+  newForm.append('model', incomingForm.get('model') || 'whisper-1');
+  newForm.append('language', incomingForm.get('language') || 'ja');
+
+  // promptがあれば引き継ぐ（ハルシネーション抑制用）
+  const prompt = incomingForm.get('prompt');
+  if (prompt) {
+    newForm.append('prompt', prompt);
   }
 
   const apiResponse = await fetchWithRetry(API_ENDPOINTS.whisper, {
@@ -243,7 +273,7 @@ async function relayWhisper(request, env) {
       'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
       // Content-Typeはfetch側で自動設定（multipart/form-data + boundary）
     },
-    body: formData,
+    body: newForm,
   });
 
   const data = await apiResponse.json();
