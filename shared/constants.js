@@ -1,5 +1,5 @@
 // COCOMI共通定数
-// Version: 1.0.0
+// Version: 1.0.1
 // relay Worker と agent-hub Worker で共有する定数定義
 
 // agent-hubが所有するテーブル（書き込みOK）
@@ -10,6 +10,8 @@ export const AGENT_TABLES = [
   'proposal_actions',
   'cost_log',
   'audit_log',
+  'agent_config',
+  'agent_checkpoints'
 ];
 
 // 保護対象テーブル（agent-hubからはREAD ONLY）
