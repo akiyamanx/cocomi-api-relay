@@ -1,10 +1,16 @@
 // COCOMI Agent Hub — エントリポイント・ルーティング
-// Version: 1.0.0
+// Version: 1.1.0（Sprint 2: コスト管理 + emergency_stop + maintenance_mode追加）
 // エージェント統制基盤のメインエントリポイント
 'use strict';
 
+import { getCostStatus } from './cost.js';
+import { writeAuditLog } from './audit.js';
+import { safeExecute, safeQuery } from '../../shared/d1-helpers.js';
+
 export default {
   async fetch(request, env, ctx) {
+    const db = env.DB;
+
     // CORS対応ヘッダ
     const corsHeaders = {
       'Content-Type': 'application/json',
@@ -29,39 +35,175 @@ export default {
 
     const url = new URL(request.url);
     const path = url.pathname;
+    const method = request.method;
 
     try {
-      // --- ルーティング ---
+      // === emergency_stop / maintenance_mode チェック ===
+      // GETリクエスト以外（書き込み系）の入口で必ずチェック
+      // ただし /emergency-stop 自体は常にアクセス可能（解除できなくなるため）
+      if (method !== 'GET' && path !== '/emergency-stop') {
+        const configResult = await safeQuery(db,
+          `SELECT key, value FROM agent_config WHERE key IN ('emergency_stop', 'maintenance_mode')`
+        );
+        const config = {};
+        for (const row of configResult.results || []) {
+          config[row.key] = row.value;
+        }
+
+        // emergency_stop中は全書き込み拒否
+        if (config.emergency_stop === 'true') {
+          await writeAuditLog(db, {
+            actorUserId: 'system',
+            action: 'permission_denied',
+            resourceType: 'system',
+            detail: { reason: '緊急停止中のため書き込み拒否', path, method },
+          });
+          return new Response(
+            JSON.stringify({ error: '緊急停止中です。書き込み操作はできません。' }),
+            { status: 503, headers: corsHeaders }
+          );
+        }
+
+        // maintenance_mode中は全書き込み拒否（read-only化）
+        if (config.maintenance_mode === 'true') {
+          return new Response(
+            JSON.stringify({ error: 'メンテナンスモード中です。読み取り専用です。' }),
+            { status: 503, headers: corsHeaders }
+          );
+        }
+      }
+
+      // === ルーティング ===
 
       // ヘルスチェック
-      if (path === '/health' && request.method === 'GET') {
+      if (path === '/health' && method === 'GET') {
         return new Response(
-          JSON.stringify({ status: 'ok', version: '1.0.0', worker: 'agent-hub' }),
+          JSON.stringify({ status: 'ok', version: '1.1.0', worker: 'agent-hub' }),
           { headers: corsHeaders }
         );
       }
 
-      // 状態確認
-      if (path === '/status' && request.method === 'GET') {
-        // TODO: Sprint 2でコスト情報を含める
-        // TODO: Sprint 4で稼働中タスク件数を含める
+      // ステータス（コスト情報 + タスク件数 + フラグ情報）
+      if (path === '/status' && method === 'GET') {
+        // コスト情報取得
+        const costStatus = await getCostStatus(db, env);
+
+        // agent_configからフラグ取得
+        const configResult = await safeQuery(db,
+          `SELECT key, value FROM agent_config WHERE key IN ('emergency_stop', 'maintenance_mode', 'low_cost_mode')`
+        );
+        const flags = {};
+        for (const row of configResult.results || []) {
+          flags[row.key] = row.value === 'true';
+        }
+
+        // 稼働中・承認待ち・停止/失敗タスク件数
+        const taskCounts = await safeQuery(db,
+          `SELECT status, COUNT(*) as count FROM proposals WHERE status IN ('running', 'submitted', 'stopped', 'failed') GROUP BY status`
+        );
+        const counts = { running: 0, submitted: 0, stopped: 0, failed: 0 };
+        for (const row of taskCounts.results || []) {
+          counts[row.status] = row.count;
+        }
+
         return new Response(
           JSON.stringify({
             status: 'ok',
             message: 'agent-hub稼働中',
-            emergency_stop: false,
-            maintenance_mode: false,
+            cost: costStatus,
+            tasks: {
+              running: counts.running,
+              pending_approval: counts.submitted,
+              stopped: counts.stopped,
+              failed: counts.failed,
+            },
+            flags: {
+              emergency_stop: flags.emergency_stop || false,
+              maintenance_mode: flags.maintenance_mode || false,
+              low_cost_mode: flags.low_cost_mode || false,
+            },
           }),
           { headers: corsHeaders }
         );
       }
 
-      // 緊急停止
-      if (path === '/emergency-stop' && request.method === 'POST') {
-        // TODO: Sprint 2で実装（全running→stopped、フラグ設定）
+      // 緊急停止（POST /emergency-stop）
+      // emergency_stop中でもアクセス可能（解除のために必要）
+      if (path === '/emergency-stop' && method === 'POST') {
+        const body = await request.json();
+        const action = body.action; // 'activate' or 'deactivate'
+        const now = new Date().toISOString();
+
+        if (action === 'activate') {
+          // emergency_stopを有効化
+          await safeExecute(db,
+            `UPDATE agent_config SET value = 'true', updated_by = 'system', updated_at = ? WHERE key = 'emergency_stop'`,
+            [now]
+          );
+
+          // 実行中の全タスクを停止
+          const stoppedResult = await safeExecute(db,
+            `UPDATE proposals SET status = 'stopped', stopped_at = ?, stop_reason = '手動緊急停止', updated_at = ? WHERE status = 'running'`,
+            [now, now]
+          );
+
+          // 監査ログ記録
+          await writeAuditLog(db, {
+            actorUserId: 'akiya',
+            action: 'emergency_stop',
+            resourceType: 'config',
+            resourceId: 'emergency_stop',
+            detail: { trigger: 'manual', stoppedTasks: stoppedResult?.meta?.changes || 0 },
+          });
+
+          return new Response(
+            JSON.stringify({
+              status: 'activated',
+              message: '緊急停止を発動しました。全タスクを停止しました。',
+              stoppedTasks: stoppedResult?.meta?.changes || 0,
+            }),
+            { headers: corsHeaders }
+          );
+        }
+
+        if (action === 'deactivate') {
+          // emergency_stopを解除
+          await safeExecute(db,
+            `UPDATE agent_config SET value = 'false', updated_by = 'akiya', updated_at = ? WHERE key = 'emergency_stop'`,
+            [now]
+          );
+
+          // 監査ログ記録
+          await writeAuditLog(db, {
+            actorUserId: 'akiya',
+            action: 'emergency_stop_deactivated',
+            resourceType: 'config',
+            resourceId: 'emergency_stop',
+            detail: { deactivatedAt: now },
+          });
+
+          return new Response(
+            JSON.stringify({
+              status: 'deactivated',
+              message: '緊急停止を解除しました。',
+            }),
+            { headers: corsHeaders }
+          );
+        }
+
+        // activate/deactivate以外のactionはエラー
         return new Response(
-          JSON.stringify({ error: '未実装（Sprint 2で実装予定）' }),
-          { status: 501, headers: corsHeaders }
+          JSON.stringify({ error: 'actionは "activate" または "deactivate" を指定してください' }),
+          { status: 400, headers: corsHeaders }
+        );
+      }
+
+      // コストステータス（GET /cost/status — 詳細版）
+      if (path === '/cost/status' && method === 'GET') {
+        const costStatus = await getCostStatus(db, env);
+        return new Response(
+          JSON.stringify(costStatus),
+          { headers: corsHeaders }
         );
       }
 

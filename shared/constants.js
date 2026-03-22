@@ -1,5 +1,5 @@
 // COCOMI共通定数
-// Version: 1.0.1
+// Version: 1.1.0
 // relay Worker と agent-hub Worker で共有する定数定義
 
 // agent-hubが所有するテーブル（書き込みOK）
@@ -68,3 +68,50 @@ export const COST_DEFAULTS = {
   MONTHLY_HARD_LIMIT: 10_000_000, // $10.00
   DAILY_SOFT_LIMIT: 700_000,      // $0.70
 };
+
+// === タスク種別ごとのコスト上限（micro_usd）===
+// 構想カプセルv0.3 + 設計書v1.0.0 セクション5-1 準拠
+export const TASK_COST_LIMITS = {
+  light_research: 100_000,   // 軽調査 $0.10
+  deep_research: 500_000,    // 深掘り $0.50
+  meeting: 1_000_000,        // 会議 $1.00
+};
+
+// === コスト日次/月次キー生成ヘルパー ===
+// daily_key: 'YYYYMMDD', monthly_key: 'YYYYMM'
+// JSTに変換して生成する（タイムゾーン: Asia/Tokyo）
+function toJST(date) {
+  return new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+}
+
+function zeroPad(n) {
+  return String(n).padStart(2, '0');
+}
+
+export function getDailyKey(date = new Date()) {
+  const jst = toJST(date);
+  return `${jst.getFullYear()}${zeroPad(jst.getMonth() + 1)}${zeroPad(jst.getDate())}`;
+}
+
+export function getMonthlyKey(date = new Date()) {
+  const jst = toJST(date);
+  return `${jst.getFullYear()}${zeroPad(jst.getMonth() + 1)}`;
+}
+
+// === 監査ログアクション定義 ===
+// 設計書v1.0.0 セクション1-6 の項目に対応
+export const AUDIT_ACTIONS = [
+  'task_created',
+  'task_approved',
+  'task_started',
+  'task_completed',
+  'task_failed',
+  'permission_denied',
+  'cost_limit_hit',
+  'cost_soft_warning',
+  'emergency_stop',
+  'emergency_stop_deactivated',
+  'maintenance_mode_on',
+  'maintenance_mode_off',
+  'system_error',
+];
