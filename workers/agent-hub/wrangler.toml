@@ -1,0 +1,24 @@
+# cocomi-agent-hub - COCOMI Agent Hub Worker
+# エージェント統制基盤の設定
+# Version: 1.0.0
+
+name = "cocomi-agent-hub"
+main = "index.js"
+compatibility_date = "2024-09-23"
+
+# D1データベース（relay Workerと同一DBを共有）
+[[d1_databases]]
+binding = "DB"
+database_name = "cocomi-memory"
+database_id = "1b164b3b-a737-4721-aa07-86d6c821c8e6"
+
+[vars]
+ENVIRONMENT = "production"
+# コスト制御閾値（micro_usd単位: $1.00 = 1,000,000）
+DAILY_COST_HARD_LIMIT_MICRO_USD = "1000000"
+MONTHLY_COST_HARD_LIMIT_MICRO_USD = "10000000"
+DAILY_COST_SOFT_LIMIT_MICRO_USD = "700000"
+
+# Secrets（wrangler secret putまたはダッシュボードで設定）:
+# AGENT_AUTH_TOKEN — agent-hub認証用
+# SHARED_AUTH_TOKEN — relay↔agent間内部認証用
