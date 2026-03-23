@@ -99,7 +99,7 @@ export default {
           method: request.method,
           headers: agentHeaders,
           body: ['GET', 'HEAD'].includes(request.method) ? null : request.body
-        });
+        }));
 
         // レスポンスをCORSヘッダ付きで返す
         const responseHeaders = new Headers(agentResponse.headers);
