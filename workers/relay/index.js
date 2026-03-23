@@ -94,7 +94,6 @@ export default {
         agentHeaders.set('X-Agent-Auth-Token', env.AGENT_AUTH_TOKEN);
         agentHeaders.delete('X-COCOMI-AUTH');
 
-      return new Response(JSON.stringify({debug: true, agentUrl, agentPath, method: request.method, hasToken: !!env.AGENT_AUTH_TOKEN}), {status:200, headers:{"Content-Type":"application/json"}});
         // agent-hub Workerへ転送
         const agentResponse = await fetch(agentUrl, {
           method: request.method,
