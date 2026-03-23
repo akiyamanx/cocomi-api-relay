@@ -31,3 +31,9 @@ database_id = "1b164b3b-a737-4721-aa07-86d6c821c8e6"
 [[vectorize]]
 binding = "VECTORIZE"
 index_name = "cocomi-memory-vectors"
+
+# Service Binding（relay→agent-hub Worker間通信）
+# 同一アカウントのWorker間fetchはCF制限で404になるためService Bindingを使用
+[[services]]
+binding = "AGENT_HUB"
+service = "cocomi-agent-hub"

@@ -87,7 +87,7 @@ export default {
       if (url.pathname.startsWith('/agent/')) {
         // パスから '/agent' プレフィックスを除去
         const agentPath = url.pathname.replace(/^\/agent/, '');
-    const agentUrl = `https://cocomi-agent-hub.k-akiyaman.workers.dev${agentPath}${url.search}`;
+    // Service Binding経由で転送（同一アカウントWorker間fetchはCF制限で不可）
 
         // 認証ヘッダをrelay側→agent-hub側に変換
         const agentHeaders = new Headers(request.headers);
@@ -95,7 +95,7 @@ export default {
         agentHeaders.delete('X-COCOMI-AUTH');
 
         // agent-hub Workerへ転送
-        const agentResponse = await fetch(agentUrl, {
+    const agentResponse = await env.AGENT_HUB.fetch(new Request('https://agent-hub' + agentPath + url.search, {
           method: request.method,
           headers: agentHeaders,
           body: ['GET', 'HEAD'].includes(request.method) ? null : request.body
