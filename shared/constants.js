@@ -1,5 +1,5 @@
 // COCOMI共通定数
-// Version: 1.1.0
+// Version: 1.2.0（Sprint 3: 権限関連定数追加）
 // relay Worker と agent-hub Worker で共有する定数定義
 
 // agent-hubが所有するテーブル（書き込みOK）
@@ -98,6 +98,21 @@ export function getMonthlyKey(date = new Date()) {
   return `${jst.getFullYear()}${zeroPad(jst.getMonth() + 1)}`;
 }
 
+// === 権限関連定数（Sprint 3追加） ===
+
+// リソース種別一覧（権限判定で使用）
+export const RESOURCES = [
+  'proposal', 'config', 'cost', 'audit', 'status', 'permission'
+];
+
+// アクション種別一覧（権限判定で使用）
+export const ACTIONS = [
+  'create', 'read', 'update', 'delete',
+  'approve', 'reject', 'cancel',
+  'stop', 'emergency_stop',
+  'submit', 'start', 'pause', 'resume', 'complete', 'fail'
+];
+
 // === 監査ログアクション定義 ===
 // 設計書v1.0.0 セクション1-6 の項目に対応
 export const AUDIT_ACTIONS = [
@@ -114,4 +129,5 @@ export const AUDIT_ACTIONS = [
   'maintenance_mode_on',
   'maintenance_mode_off',
   'system_error',
+  'api_request',
 ];

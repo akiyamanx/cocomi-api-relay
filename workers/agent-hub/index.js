@@ -1,10 +1,11 @@
 // COCOMI Agent Hub — エントリポイント・ルーティング
-// Version: 1.1.0（Sprint 2: コスト管理 + emergency_stop + maintenance_mode追加）
+// Version: 1.2.0（Sprint 3: 権限ガード + 監査ログ強化 + /audit/logsエンドポイント追加）
 // エージェント統制基盤のメインエントリポイント
 'use strict';
 
 import { getCostStatus } from './cost.js';
-import { writeAuditLog } from './audit.js';
+import { writeAuditLog, logRequest, getAuditLogs } from './audit.js';
+import { requirePermission } from './permission.js';
 import { safeExecute, safeQuery } from '../../shared/d1-helpers.js';
 
 export default {
@@ -36,6 +37,11 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+
+    // === ユーザー特定 ===
+    // Phase 1: トークン認証が通った = akiya（ownerロール）
+    // Sprint 4以降でLINE user_id等による動的ユーザー特定に拡張
+    const currentUserId = 'akiya';
 
     try {
       // === emergency_stop / maintenance_mode チェック ===
@@ -75,16 +81,20 @@ export default {
 
       // === ルーティング ===
 
-      // ヘルスチェック
+      // ヘルスチェック（権限チェック不要）
       if (path === '/health' && method === 'GET') {
         return new Response(
-          JSON.stringify({ status: 'ok', version: '1.1.0', worker: 'agent-hub' }),
+          JSON.stringify({ status: 'ok', version: '1.2.0', worker: 'agent-hub' }),
           { headers: corsHeaders }
         );
       }
 
-      // ステータス（コスト情報 + タスク件数 + フラグ情報）
+      // ステータス（コスト情報 + タスク件数 + フラグ情報）— 権限チェック付き
       if (path === '/status' && method === 'GET') {
+        const perm = await requirePermission(db, {
+          userId: currentUserId, resource: 'status', action: 'read'
+        });
+        if (!perm.allowed) return perm.response;
         // コスト情報取得
         const costStatus = await getCostStatus(db, env);
 
@@ -127,9 +137,14 @@ export default {
         );
       }
 
-      // 緊急停止（POST /emergency-stop）
+      // 緊急停止（POST /emergency-stop）— 権限チェック付き
       // emergency_stop中でもアクセス可能（解除のために必要）
       if (path === '/emergency-stop' && method === 'POST') {
+        const perm = await requirePermission(db, {
+          userId: currentUserId, resource: 'config', action: 'emergency_stop'
+        });
+        if (!perm.allowed) return perm.response;
+
         const body = await request.json();
         const action = body.action; // 'activate' or 'deactivate'
         const now = new Date().toISOString();
@@ -149,12 +164,15 @@ export default {
 
           // 監査ログ記録
           await writeAuditLog(db, {
-            actorUserId: 'akiya',
+            actorUserId: currentUserId,
             action: 'emergency_stop',
             resourceType: 'config',
             resourceId: 'emergency_stop',
             detail: { trigger: 'manual', stoppedTasks: stoppedResult?.meta?.changes || 0 },
           });
+
+          // POSTリクエストログ記録（非同期、主処理ブロックしない）
+          ctx.waitUntil(logRequest(db, { method, path, userId: currentUserId, resultStatus: 200 }));
 
           return new Response(
             JSON.stringify({
@@ -169,18 +187,21 @@ export default {
         if (action === 'deactivate') {
           // emergency_stopを解除
           await safeExecute(db,
-            `UPDATE agent_config SET value = 'false', updated_by = 'akiya', updated_at = ? WHERE key = 'emergency_stop'`,
-            [now]
+            `UPDATE agent_config SET value = 'false', updated_by = ?, updated_at = ? WHERE key = 'emergency_stop'`,
+            [currentUserId, now]
           );
 
           // 監査ログ記録
           await writeAuditLog(db, {
-            actorUserId: 'akiya',
+            actorUserId: currentUserId,
             action: 'emergency_stop_deactivated',
             resourceType: 'config',
             resourceId: 'emergency_stop',
             detail: { deactivatedAt: now },
           });
+
+          // POSTリクエストログ記録
+          ctx.waitUntil(logRequest(db, { method, path, userId: currentUserId, resultStatus: 200 }));
 
           return new Response(
             JSON.stringify({
@@ -198,11 +219,37 @@ export default {
         );
       }
 
-      // コストステータス（GET /cost/status — 詳細版）
+      // コストステータス（GET /cost/status — 詳細版）— 権限チェック付き
       if (path === '/cost/status' && method === 'GET') {
+        const perm = await requirePermission(db, {
+          userId: currentUserId, resource: 'cost', action: 'read'
+        });
+        if (!perm.allowed) return perm.response;
         const costStatus = await getCostStatus(db, env);
         return new Response(
           JSON.stringify(costStatus),
+          { headers: corsHeaders }
+        );
+      }
+
+      // 【Sprint 3追加】監査ログ取得（GET /audit/logs）— 権限チェック付き
+      if (path === '/audit/logs' && method === 'GET') {
+        const perm = await requirePermission(db, {
+          userId: currentUserId, resource: 'audit', action: 'read'
+        });
+        if (!perm.allowed) return perm.response;
+
+        // クエリパラメータからフィルタ条件を取得
+        const params = Object.fromEntries(url.searchParams);
+        const logs = await getAuditLogs(db, {
+          limit: parseInt(params.limit) || 20,
+          action: params.action,
+          resourceType: params.resource_type,
+          actorUserId: params.actor,
+          since: params.since,
+        });
+        return new Response(
+          JSON.stringify({ status: 'ok', logs }),
           { headers: corsHeaders }
         );
       }

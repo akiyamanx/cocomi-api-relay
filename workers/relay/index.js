@@ -82,6 +82,35 @@ export default {
         return handleCORS(env, jsonError('Unauthorized', 401));
       }
 
+      // === Sprint 3追加: agent-hub プロキシ ===
+      // /agent/* へのリクエストをagent-hub Workerに転送
+      if (url.pathname.startsWith('/agent/')) {
+        // パスから '/agent' プレフィックスを除去
+        const agentPath = url.pathname.replace(/^\/agent/, '');
+        const agentUrl = `https://cocomi-agent-hub.k-akiyaman.workers.dev${agentPath}${url.search}`;
+
+        // 認証ヘッダをrelay側→agent-hub側に変換
+        const agentHeaders = new Headers(request.headers);
+        agentHeaders.set('X-Agent-Auth-Token', env.AGENT_AUTH_TOKEN);
+        agentHeaders.delete('X-COCOMI-AUTH');
+
+        // agent-hub Workerへ転送
+        const agentResponse = await fetch(agentUrl, {
+          method: request.method,
+          headers: agentHeaders,
+          body: ['GET', 'HEAD'].includes(request.method) ? null : request.body
+        });
+
+        // レスポンスをCORSヘッダ付きで返す
+        const responseHeaders = new Headers(agentResponse.headers);
+        responseHeaders.set('Access-Control-Allow-Origin', env.ALLOWED_ORIGIN || 'https://akiyamanx.github.io');
+
+        return new Response(agentResponse.body, {
+          status: agentResponse.status,
+          headers: responseHeaders
+        });
+      }
+
       // v1.3追加 - /memory はGET/POST/DELETE対応（POST制限の前に分岐）
       if (path === 'memory') {
         const memRes = await handleMemory(request, env);
