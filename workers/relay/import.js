@@ -5,6 +5,7 @@
 // v1.0 2026-03-16 - 新規作成（実行計画書v24.0「次のステップ#1」）
 // v1.1 2026-03-16 - Vectorize用短縮要約生成（Gemini Flash）追加。全文はD1に、要約でembedding
 // v1.2 2026-03-17 - 重複チェック追加。Vectorize類似度検索で既存記憶と高類似度ならスキップ
+// v1.3 2026-03-23 - sourceカラム対応（保存元区別: importデフォルト / JSONで指定可）
 
 import { jsonResponse, jsonError } from './utils.js';
 import { upsertVector, searchVectors } from './vector.js';
@@ -171,17 +172,19 @@ async function _insertOne(data, env) {
   }
 
   // D1に挿入
+  // v1.3追加 - sourceカラム（インポート元: import固定 / JSONにsourceがあればそちらを使う）
+  const source = data.source || 'import';
   await env.DB.prepare(`
     INSERT INTO memories (key, type, topic, summary, decisions, sister, category,
                           round, lead, mood, ai_summary, ai_error, created_at,
-                          emotion_user, emotion_ai, emotion_comment)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          emotion_user, emotion_ai, emotion_comment, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     key, type, topic, summary, JSON.stringify(decisions),
     sister, category,
     1, null, data.mood || 'neutral',
     0, 'direct_import', createdAt,
-    emotionUser, emotionAi, emotionComment
+    emotionUser, emotionAi, emotionComment, source
   ).run();
 
   // Vectorize にembedding保存（失敗しても記憶保存は壊さない）

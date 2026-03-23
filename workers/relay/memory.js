@@ -17,6 +17,7 @@
 // v1.13 2026-03-15 - responseSchema追加（Geminiが全フィールドを確実に返すよう強制）
 // v1.14 2026-03-15 - maxOutputTokens 512→1024（感情コメント含むJSON途中切れ防止）
 // v1.15 2026-03-16 - デバッグコード削除（感情温度動作確認済み、emotion_debugをai_errorに書くコード除去）
+// v1.16 2026-03-23 - 記憶上限100→100万件拡張 + sourceカラム対応（保存元区別: cocomitalk/web-claude/import）
 
 import { jsonResponse, jsonError } from './utils.js';
 // v1.10追加 - Vectorize連携（embedding保存・削除）
@@ -29,10 +30,9 @@ import { upsertVector, deleteVector, deleteVectors } from './vector.js';
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 // ============================================================
-// 記憶の最大件数（KV時代の100件制限を引き継ぎ）
-// D1なら拡張容易だが、まずは同じ制限で安定運用
+// 記憶の最大件数（v1.16で100万件に拡張 — D1容量5GBに十分余裕あり）
 // ============================================================
-const MAX_MEMORIES = 100;
+const MAX_MEMORIES = 1000000;
 
 // ============================================================
 // メモリーD1操作（Step 6 Phase 2: KV→D1移行）
@@ -196,17 +196,19 @@ export async function memorySave(request, env) {
 
     // v1.7変更 - D1にINSERT（KV put→SQL INSERT）
     // v1.11変更 - 感情の温度3カラム追加
+    // v1.16追加 - sourceカラム（保存元の区別: cocomitalk/web-claude/import）
+    const source = body.source || 'cocomitalk';
     await env.DB.prepare(`
       INSERT INTO memories (key, type, topic, summary, decisions, sister, category,
                             round, lead, mood, ai_summary, ai_error, created_at,
-                            emotion_user, emotion_ai, emotion_comment)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            emotion_user, emotion_ai, emotion_comment, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       key, type, topic, summary, JSON.stringify(decisions),
       body.sister || null, category,
       body.round || 1, body.lead || null, body.mood || 'neutral',
       aiSummary ? 1 : 0, aiError, createdAt,
-      aiEmotionUser, aiEmotionAi, aiEmotionComment
+      aiEmotionUser, aiEmotionAi, aiEmotionComment, source
     ).run();
 
     // v1.10追加 - Vectorize にembeddingを保存（失敗しても記憶保存は壊さない）
@@ -237,6 +239,8 @@ export async function memorySave(request, env) {
       emotionUser: aiEmotionUser,
       emotionAi: aiEmotionAi,
       emotionComment: aiEmotionComment,
+      // v1.16追加 - 保存元の区別
+      source,
     };
     return jsonResponse({ success: true, key, memory });
   } catch (e) {
@@ -440,6 +444,8 @@ export function _rowToMemory(row) {
     emotionUser: row.emotion_user,
     emotionAi: row.emotion_ai,
     emotionComment: row.emotion_comment,
+    // v1.16追加 - 保存元の区別
+    source: row.source || 'cocomitalk',
   };
 }
 
