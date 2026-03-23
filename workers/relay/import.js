@@ -6,6 +6,7 @@
 // v1.1 2026-03-16 - Vectorize用短縮要約生成（Gemini Flash）追加。全文はD1に、要約でembedding
 // v1.2 2026-03-17 - 重複チェック追加。Vectorize類似度検索で既存記憶と高類似度ならスキップ
 // v1.3 2026-03-23 - sourceカラム対応（保存元区別: importデフォルト / JSONで指定可）
+// v1.4 2026-03-23 - 姉妹IDマッピング統一（gpt→onee, claude→kuro）
 
 import { jsonResponse, jsonError } from './utils.js';
 import { upsertVector, searchVectors } from './vector.js';
@@ -131,7 +132,10 @@ async function _insertOne(data, env) {
   if (!summary) return { error: 'summaryが空です' };
 
   const type = data.type || 'import';
-  const sister = data.sister || null;
+  // v1.4追加 - 姉妹IDマッピング（gpt→onee, claude→kuro に統一）
+  const SISTER_ID_MAP = { gpt: 'onee', claude: 'kuro', koko: 'koko' };
+  const rawSister = data.sister || null;
+  const sister = rawSister ? (SISTER_ID_MAP[rawSister] || rawSister) : null;
   const category = data.category || null;
   const decisions = Array.isArray(data.decisions) ? data.decisions : [];
 

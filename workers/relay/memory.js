@@ -18,6 +18,7 @@
 // v1.14 2026-03-15 - maxOutputTokens 512→1024（感情コメント含むJSON途中切れ防止）
 // v1.15 2026-03-16 - デバッグコード削除（感情温度動作確認済み、emotion_debugをai_errorに書くコード除去）
 // v1.16 2026-03-23 - 記憶上限100→100万件拡張 + sourceカラム対応（保存元区別: cocomitalk/web-claude/import）
+// v1.17 2026-03-23 - 姉妹IDマッピング統一（gpt→onee, claude→kuro）DBはCOCOMIOS三姉妹IDで保存
 
 import { jsonResponse, jsonError } from './utils.js';
 // v1.10追加 - Vectorize連携（embedding保存・削除）
@@ -33,6 +34,16 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 // 記憶の最大件数（v1.16で100万件に拡張 — D1容量5GBに十分余裕あり）
 // ============================================================
 const MAX_MEMORIES = 1000000;
+
+// ============================================================
+// v1.17追加 - 姉妹IDマッピング（API名→COCOMIOS三姉妹ID）
+// フロントエンドはgpt/claude/kokoだが、DBにはonee/kuro/kokoで統一保存
+// ============================================================
+const SISTER_ID_MAP = { gpt: 'onee', claude: 'kuro', koko: 'koko' };
+function _normalizeSister(raw) {
+  if (!raw) return null;
+  return SISTER_ID_MAP[raw] || raw;  // マップにない値はそのまま通す
+}
 
 // ============================================================
 // メモリーD1操作（Step 6 Phase 2: KV→D1移行）
@@ -198,6 +209,8 @@ export async function memorySave(request, env) {
     // v1.11変更 - 感情の温度3カラム追加
     // v1.16追加 - sourceカラム（保存元の区別: cocomitalk/web-claude/import）
     const source = body.source || 'cocomitalk';
+    // v1.17追加 - 姉妹IDをCOCOMIOS統一IDに変換（gpt→onee, claude→kuro）
+    const sister = _normalizeSister(body.sister);
     await env.DB.prepare(`
       INSERT INTO memories (key, type, topic, summary, decisions, sister, category,
                             round, lead, mood, ai_summary, ai_error, created_at,
@@ -205,7 +218,7 @@ export async function memorySave(request, env) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       key, type, topic, summary, JSON.stringify(decisions),
-      body.sister || null, category,
+      sister, category,
       body.round || 1, body.lead || null, body.mood || 'neutral',
       aiSummary ? 1 : 0, aiError, createdAt,
       aiEmotionUser, aiEmotionAi, aiEmotionComment, source
@@ -214,7 +227,7 @@ export async function memorySave(request, env) {
     // v1.10追加 - Vectorize にembeddingを保存（失敗しても記憶保存は壊さない）
     const embeddingText = `${topic} ${summary}`;
     await upsertVector(key, embeddingText, {
-      type, sister: body.sister || '', created_at: createdAt,
+      type, sister: sister || '', created_at: createdAt,
     }, env).catch(e => console.warn('[Memory] embedding保存スキップ:', e.message));
 
     // v1.7変更 - 100件制限（KV index管理→SQL COUNT+DELETE）
@@ -231,7 +244,7 @@ export async function memorySave(request, env) {
     // レスポンスはcamelCase形式で返す（フロント互換）
     const memory = {
       key, type, topic, summary, decisions,
-      sister: body.sister || null, category,
+      sister, category,
       round: body.round || 1, lead: body.lead || null,
       mood: body.mood || 'neutral',
       aiSummary, aiError, createdAt,
