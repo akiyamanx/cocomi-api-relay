@@ -87,7 +87,7 @@ export default {
       if (url.pathname.startsWith('/agent/')) {
         // パスから '/agent' プレフィックスを除去
         const agentPath = url.pathname.replace(/^\/agent/, '');
-        const agentUrl = `https://cocomi-agent-hub.k-akiyaman.workers.dev${agentPath}${url.search}`;
+    const agentUrl = `https://cocomi-agent-hub.k-akiyaman.workers.dev${agentPath}${url.search}`;
 
         // 認証ヘッダをrelay側→agent-hub側に変換
         const agentHeaders = new Headers(request.headers);
