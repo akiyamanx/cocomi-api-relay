@@ -7,6 +7,7 @@
 // v1.2 2026-03-17 - 重複チェック追加。Vectorize類似度検索で既存記憶と高類似度ならスキップ
 // v1.3 2026-03-23 - sourceカラム対応（保存元区別: importデフォルト / JSONで指定可）
 // v1.4 2026-03-23 - 姉妹IDマッピング統一（gpt→onee, claude→kuro）
+// v1.5 2026-03-24 - MAX_MEMORIES 100→1000000に修正（memory.jsと統一、100件制限はKV時代の名残）
 
 import { jsonResponse, jsonError } from './utils.js';
 import { upsertVector, searchVectors } from './vector.js';
@@ -18,7 +19,8 @@ import { upsertVector, searchVectors } from './vector.js';
 // 1回の一括投入で許可する最大件数（コスト安全策: embedding生成がAPI課金）
 const MAX_BATCH_SIZE = 20;
 // MAX_MEMORIESはmemory.jsと同じ値（D1全体の上限）
-const MAX_MEMORIES = 100;
+// v1.5修正 - 100→1000000（memory.jsと統一。100はKV時代の名残で、D1では100万件まで余裕）
+const MAX_MEMORIES = 1000000;
 // v1.1追加 - 短縮要約の閾値（この文字数を超えたらGemini Flashで要約してからembedding）
 const SUMMARY_SHORT_THRESHOLD = 200;
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
