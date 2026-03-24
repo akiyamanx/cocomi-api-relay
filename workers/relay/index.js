@@ -17,6 +17,7 @@
 // v2.4 2026-03-16 - memory.js v1.15: デバッグコード削除（感情温度動作確認済み）
 // v2.5 2026-03-16 - import.js v1.0: 記憶直接投入エンドポイント（/memory-import）追加
 // v2.6 2026-03-19 - relayWhisper: FormData中継時のcontent-type再構築（Invalid file format対策）
+// v2.7 2026-03-24 - ストリーミング中継対応（OpenAI/Claude、stream:trueで30秒タイムアウト回避）
 
 // ============================================================
 // モジュールインポート
@@ -211,8 +212,14 @@ async function relayGemini(request, env) {
 }
 
 // v1.0 - OpenAI API中継（お姉ちゃん / GPT）
+// v2.7追加 - body.stream===trueならストリーミング中継（30秒タイムアウト回避）
 async function relayOpenAI(request, env) {
   const body = await request.json();
+
+  // v2.7 - ストリーミング中継モード
+  if (body.stream === true) {
+    return relayStreamOpenAI(body, env);
+  }
 
   const apiResponse = await fetchWithRetry(API_ENDPOINTS.openai, {
     method: 'POST',
@@ -228,8 +235,14 @@ async function relayOpenAI(request, env) {
 }
 
 // v1.0 - Claude API中継（クロちゃん）
+// v2.7追加 - body.stream===trueならストリーミング中継
 async function relayClaude(request, env) {
   const body = await request.json();
+
+  // v2.7 - ストリーミング中継モード
+  if (body.stream === true) {
+    return relayStreamClaude(body, env);
+  }
 
   const apiResponse = await fetchWithRetry(API_ENDPOINTS.claude, {
     method: 'POST',
@@ -307,6 +320,69 @@ async function relayWhisper(request, env) {
 
   const data = await apiResponse.json();
   return jsonResponse(data, apiResponse.status);
+}
+
+// ============================================================
+// v2.7追加 - ストリーミング中継関数（30秒タイムアウト回避）
+// stream:trueの場合、APIからのSSEストリームをそのままフロントに中継する
+// Cloudflare Workersは最初のバイトを返した後は30秒制限が適用されない
+// ============================================================
+
+// v2.7 - OpenAIストリーミング中継
+// OpenAI SSE形式: data: {"choices":[{"delta":{"content":"テキスト"}}]}\n\n
+async function relayStreamOpenAI(body, env) {
+  const apiResponse = await fetch(API_ENDPOINTS.openai, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!apiResponse.ok) {
+    const errData = await apiResponse.json().catch(() => ({}));
+    return jsonError(errData?.error?.message || `OpenAI stream error: ${apiResponse.status}`, apiResponse.status);
+  }
+
+  // SSEストリームをそのまま中継（Worker→フロント）
+  return new Response(apiResponse.body, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
+}
+
+// v2.7 - Claudeストリーミング中継
+// Claude SSE形式: event: content_block_delta\ndata: {"delta":{"text":"テキスト"}}\n\n
+async function relayStreamClaude(body, env) {
+  const apiResponse = await fetch(API_ENDPOINTS.claude, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!apiResponse.ok) {
+    const errData = await apiResponse.json().catch(() => ({}));
+    return jsonError(errData?.error?.message || `Claude stream error: ${apiResponse.status}`, apiResponse.status);
+  }
+
+  // SSEストリームをそのまま中継
+  return new Response(apiResponse.body, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
 }
 
 // v1.2追加 - OpenAI TTS API中継（テキスト→音声変換）
