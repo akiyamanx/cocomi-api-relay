@@ -18,125 +18,90 @@
 // v2.5 2026-03-16 - import.js v1.0: 記憶直接投入エンドポイント（/memory-import）追加
 // v2.6 2026-03-19 - relayWhisper: FormData中継時のcontent-type再構築（Invalid file format対策）
 // v2.7 2026-03-24 - ストリーミング中継対応（OpenAI/Claude、stream:trueで30秒タイムアウト回避）
+// v2.8 2026-03-27 - クリーンアップ: /memory-vectorize一時エンドポイント削除（完了済み）
 
-// ============================================================
-// モジュールインポート
-// ============================================================
 import { handleMemory } from './memory.js';
 import { _rowToMemory } from './memory.js';
-import { handleMemorySearch, handleVectorizeMigration } from './vector.js';
+import { handleMemorySearch } from './vector.js';
 import { handleSearch } from './search.js';
-// v2.5追加 - 記憶直接投入（裏口インポート）
 import { handleMemoryImport } from './import.js';
 import {
   isAllowedOrigin, isAuthenticated, handleCORS,
   jsonResponse, jsonError, fetchWithRetry
 } from './utils.js';
 
-// ============================================================
-// 定数・設定
-// ============================================================
-
-// v1.0 - API転送先URL定義
 const API_ENDPOINTS = {
   gemini: 'https://generativelanguage.googleapis.com/v1beta',
   openai: 'https://api.openai.com/v1/chat/completions',
   claude: 'https://api.anthropic.com/v1/messages',
   whisper: 'https://api.openai.com/v1/audio/transcriptions',
-  tts: 'https://api.openai.com/v1/audio/speech', // v1.2追加
+  tts: 'https://api.openai.com/v1/audio/speech',
 };
-
-// ============================================================
-// メインハンドラー
-// ============================================================
 
 export default {
   async fetch(request, env) {
-    // v1.0 - OPTIONSプリフライト対応
     if (request.method === 'OPTIONS') {
       return handleCORS(env, new Response(null, { status: 204 }));
     }
 
     try {
-      // v1.0 - パスによるルーティング
       const url = new URL(request.url);
       const path = url.pathname.replace(/^\/+|\/+$/g, '');
 
-      // v1.1修正 - ヘルスチェック（認証もCORSも不要 - どこからでもアクセス可能）
       if (path === 'health' && request.method === 'GET') {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '2.5',
+          version: '2.8',
           timestamp: new Date().toISOString(),
         }));
       }
 
-      // v1.0 - CORS検証（health以外）
       const origin = request.headers.get('Origin') || '';
       if (!isAllowedOrigin(origin, env)) {
         return jsonError('Forbidden: Origin not allowed', 403);
       }
 
-      // v1.0 - 認証チェック（ヘルスチェック以外は必須）
       if (!isAuthenticated(request, env)) {
         return handleCORS(env, jsonError('Unauthorized', 401));
       }
 
-      // === Sprint 3追加: agent-hub プロキシ ===
-      // /agent/* へのリクエストをagent-hub Workerに転送
+      // agent-hub プロキシ
       if (url.pathname.startsWith('/agent/')) {
-        // パスから '/agent' プレフィックスを除去
         const agentPath = url.pathname.replace(/^\/agent/, '');
-    // Service Binding経由で転送（同一アカウントWorker間fetchはCF制限で不可）
-
-        // 認証ヘッダをrelay側→agent-hub側に変換
         const agentHeaders = new Headers(request.headers);
         agentHeaders.set('X-Agent-Auth-Token', env.AGENT_AUTH_TOKEN);
         agentHeaders.delete('X-COCOMI-AUTH');
-
-        // agent-hub Workerへ転送
-    const agentResponse = await env.AGENT_HUB.fetch(new Request('https://agent-hub' + agentPath + url.search, {
+        const agentResponse = await env.AGENT_HUB.fetch(new Request('https://agent-hub' + agentPath + url.search, {
           method: request.method,
           headers: agentHeaders,
           body: ['GET', 'HEAD'].includes(request.method) ? null : request.body
         }));
-
-        // レスポンスをCORSヘッダ付きで返す
         const responseHeaders = new Headers(agentResponse.headers);
         responseHeaders.set('Access-Control-Allow-Origin', env.ALLOWED_ORIGIN || 'https://akiyamanx.github.io');
-
         return new Response(agentResponse.body, {
           status: agentResponse.status,
           headers: responseHeaders
         });
       }
 
-      // v1.3追加 - /memory はGET/POST/DELETE対応（POST制限の前に分岐）
       if (path === 'memory') {
         const memRes = await handleMemory(request, env);
         return handleCORS(env, memRes);
       }
 
-      // v2.5追加 - /memory-import はPOST対応（裏から記憶直接投入）
       if (path === 'memory-import' && request.method === 'POST') {
         const importRes = await handleMemoryImport(request, env);
         return handleCORS(env, importRes);
       }
 
-      // v2.1追加 - /memory-search はPOST対応（Step 6 Phase 2: Vectorize RAG意味検索）
       if (path === 'memory-search' && request.method === 'POST') {
         const searchRes = await handleMemorySearch(request, env, _rowToMemory);
         return handleCORS(env, searchRes);
       }
 
-      // v2.1追加 - /memory-vectorize はPOST対応（既存記憶のembedding一括生成・一時エンドポイント）
-      if (path === 'memory-vectorize' && request.method === 'POST') {
-        const migrateRes = await handleVectorizeMigration(request, env);
-        return handleCORS(env, migrateRes);
-      }
+      // v2.8削除 - /memory-vectorize（一括embedding生成は完了済み。一時エンドポイント削除）
 
-      // v1.8追加 - /search はPOST対応（Phase 2a リアルタイム検索）
       if (path === 'search') {
         if (request.method !== 'POST') {
           return handleCORS(env, jsonError('Method not allowed for /search', 405));
@@ -145,12 +110,10 @@ export default {
         return handleCORS(env, searchRes);
       }
 
-      // v1.0 - POSTメソッドのみ許可（API中継）
       if (request.method !== 'POST') {
         return handleCORS(env, jsonError('Method not allowed', 405));
       }
 
-      // v1.0 - エンドポイントルーティング
       let response;
       switch (path) {
         case 'gemini':
@@ -165,8 +128,8 @@ export default {
         case 'whisper':
           response = await relayWhisper(request, env);
           break;
-        case 'tts-test': // v1.2追加 - TTS声テスト
-        case 'tts':      // v1.2追加 - TTS本番用（同じ処理）
+        case 'tts-test':
+        case 'tts':
           response = await relayTTS(request, env);
           break;
         default:
@@ -181,46 +144,28 @@ export default {
   },
 };
 
-// ============================================================
-// API中継関数
-// ============================================================
-
-// v1.0 - Gemini API中継（ここちゃん）
-// フロントから { model, contents, systemInstruction, generationConfig, safetySettings } を受け取り、
-// APIキーだけWorker側で付与して転送する
 async function relayGemini(request, env) {
   const body = await request.json();
-
-  // モデル名を取り出し（フロント側でフルネームを送る想定）
   const model = body.model || 'gemini-2.5-flash';
   const action = body.action || 'generateContent';
   const apiUrl = `${API_ENDPOINTS.gemini}/models/${model}:${action}?key=${env.GEMINI_API_KEY}`;
-
-  // Gemini APIに転送するペイロード（model, actionはURL側で使うので除外）
   const payload = { ...body };
   delete payload.model;
   delete payload.action;
-
   const apiResponse = await fetchWithRetry(apiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-
   const data = await apiResponse.json();
   return jsonResponse(data, apiResponse.status);
 }
 
-// v1.0 - OpenAI API中継（お姉ちゃん / GPT）
-// v2.7追加 - body.stream===trueならストリーミング中継（30秒タイムアウト回避）
 async function relayOpenAI(request, env) {
   const body = await request.json();
-
-  // v2.7 - ストリーミング中継モード
   if (body.stream === true) {
     return relayStreamOpenAI(body, env);
   }
-
   const apiResponse = await fetchWithRetry(API_ENDPOINTS.openai, {
     method: 'POST',
     headers: {
@@ -229,21 +174,15 @@ async function relayOpenAI(request, env) {
     },
     body: JSON.stringify(body),
   });
-
   const data = await apiResponse.json();
   return jsonResponse(data, apiResponse.status);
 }
 
-// v1.0 - Claude API中継（クロちゃん）
-// v2.7追加 - body.stream===trueならストリーミング中継
 async function relayClaude(request, env) {
   const body = await request.json();
-
-  // v2.7 - ストリーミング中継モード
   if (body.stream === true) {
     return relayStreamClaude(body, env);
   }
-
   const apiResponse = await fetchWithRetry(API_ENDPOINTS.claude, {
     method: 'POST',
     headers: {
@@ -253,83 +192,51 @@ async function relayClaude(request, env) {
     },
     body: JSON.stringify(body),
   });
-
   const data = await apiResponse.json();
   return jsonResponse(data, apiResponse.status);
 }
 
-// v1.0 - Whisper API中継（音声認識）
-// v2.6修正 - FormData中継時にfile content-typeを明示再構築（Invalid file format対策）
+// v2.6修正 - FormData中継時にfile content-typeを明示再構築
 async function relayWhisper(request, env) {
-  // Whisperはmultipart/form-dataで受け取る
   const contentType = request.headers.get('Content-Type') || '';
-
   if (!contentType.includes('multipart/form-data')) {
     return jsonError('Whisper endpoint requires multipart/form-data', 400);
   }
-
   const incomingForm = await request.formData();
   const file = incomingForm.get('file');
-
   if (!file) {
     return jsonError('Whisper endpoint requires file field', 400);
   }
-
-  // v2.6追加 - ファイル名から正しいcontent-typeを判定して再構築
-  // Cloudflare Workerのrequest.formData()がBlobのcontent-typeを
-  // application/octet-streamに変えてしまう場合がある問題への対策
   const MIME_MAP = {
-    webm: 'audio/webm',
-    mp3: 'audio/mpeg',
-    mp4: 'audio/mp4',
-    m4a: 'audio/mp4',
-    ogg: 'audio/ogg',
-    oga: 'audio/ogg',
-    flac: 'audio/flac',
-    wav: 'audio/wav',
+    webm: 'audio/webm', mp3: 'audio/mpeg', mp4: 'audio/mp4',
+    m4a: 'audio/mp4', ogg: 'audio/ogg', oga: 'audio/ogg',
+    flac: 'audio/flac', wav: 'audio/wav',
   };
-
   const fileName = file.name || 'audio.webm';
   const ext = fileName.split('.').pop().toLowerCase();
   const correctMime = MIME_MAP[ext] || 'audio/webm';
-
-  // ファイルデータを取り出して正しいcontent-typeで新Blobを作成
   const arrayBuf = await file.arrayBuffer();
   const correctedBlob = new Blob([arrayBuf], { type: correctMime });
-
-  // 新しいFormDataを構築（元のフィールドを引き継ぎ）
   const newForm = new FormData();
   newForm.append('file', correctedBlob, fileName);
   newForm.append('model', incomingForm.get('model') || 'whisper-1');
   newForm.append('language', incomingForm.get('language') || 'ja');
-
-  // promptがあれば引き継ぐ（ハルシネーション抑制用）
   const prompt = incomingForm.get('prompt');
   if (prompt) {
     newForm.append('prompt', prompt);
   }
-
   const apiResponse = await fetchWithRetry(API_ENDPOINTS.whisper, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
-      // Content-Typeはfetch側で自動設定（multipart/form-data + boundary）
     },
     body: newForm,
   });
-
   const data = await apiResponse.json();
   return jsonResponse(data, apiResponse.status);
 }
 
-// ============================================================
-// v2.7追加 - ストリーミング中継関数（30秒タイムアウト回避）
-// stream:trueの場合、APIからのSSEストリームをそのままフロントに中継する
-// Cloudflare Workersは最初のバイトを返した後は30秒制限が適用されない
-// ============================================================
-
 // v2.7 - OpenAIストリーミング中継
-// OpenAI SSE形式: data: {"choices":[{"delta":{"content":"テキスト"}}]}\n\n
 async function relayStreamOpenAI(body, env) {
   const apiResponse = await fetch(API_ENDPOINTS.openai, {
     method: 'POST',
@@ -339,13 +246,10 @@ async function relayStreamOpenAI(body, env) {
     },
     body: JSON.stringify(body),
   });
-
   if (!apiResponse.ok) {
     const errData = await apiResponse.json().catch(() => ({}));
     return jsonError(errData?.error?.message || `OpenAI stream error: ${apiResponse.status}`, apiResponse.status);
   }
-
-  // SSEストリームをそのまま中継（Worker→フロント）
   return new Response(apiResponse.body, {
     status: 200,
     headers: {
@@ -357,7 +261,6 @@ async function relayStreamOpenAI(body, env) {
 }
 
 // v2.7 - Claudeストリーミング中継
-// Claude SSE形式: event: content_block_delta\ndata: {"delta":{"text":"テキスト"}}\n\n
 async function relayStreamClaude(body, env) {
   const apiResponse = await fetch(API_ENDPOINTS.claude, {
     method: 'POST',
@@ -368,13 +271,10 @@ async function relayStreamClaude(body, env) {
     },
     body: JSON.stringify(body),
   });
-
   if (!apiResponse.ok) {
     const errData = await apiResponse.json().catch(() => ({}));
     return jsonError(errData?.error?.message || `Claude stream error: ${apiResponse.status}`, apiResponse.status);
   }
-
-  // SSEストリームをそのまま中継
   return new Response(apiResponse.body, {
     status: 200,
     headers: {
@@ -385,27 +285,20 @@ async function relayStreamClaude(body, env) {
   });
 }
 
-// v1.2追加 - OpenAI TTS API中継（テキスト→音声変換）
-// リクエスト: { text, voice, speed, model }
-// レスポンス: audio/mpeg（mp3バイナリ）
+// v1.2追加 - OpenAI TTS API中継
 async function relayTTS(request, env) {
   const body = await request.json();
-
-  // バリデーション
   const allowedVoices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
   const text = (body.text || '').trim();
   const voice = body.voice || 'alloy';
   const speed = Number(body.speed) || 1.0;
   const model = body.model || 'tts-1';
-
   if (!text) return jsonError('text は必須です', 400);
   if (text.length > 500) return jsonError('text は500文字以内にしてください', 400);
   if (!allowedVoices.includes(voice)) {
     return jsonError(`voice は ${allowedVoices.join(', ')} のいずれかです`, 400);
   }
   if (speed < 0.25 || speed > 4.0) return jsonError('speed は 0.25〜4.0 の範囲です', 400);
-
-  // OpenAI TTS APIに転送
   const apiResponse = await fetchWithRetry(API_ENDPOINTS.tts, {
     method: 'POST',
     headers: {
@@ -414,13 +307,10 @@ async function relayTTS(request, env) {
     },
     body: JSON.stringify({ model, input: text, voice, speed, response_format: 'mp3' }),
   });
-
-  // 音声バイナリをそのまま返す
   if (!apiResponse.ok) {
     const errData = await apiResponse.json().catch(() => ({}));
     return jsonError(errData.error?.message || 'TTS API error', apiResponse.status);
   }
-
   return new Response(apiResponse.body, {
     status: 200,
     headers: { 'Content-Type': 'audio/mpeg' },
