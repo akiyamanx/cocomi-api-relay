@@ -19,6 +19,7 @@
 // v2.6 2026-03-19 - relayWhisper: FormData中継時のcontent-type再構築（Invalid file format対策）
 // v2.7 2026-03-24 - ストリーミング中継対応（OpenAI/Claude、stream:trueで30秒タイムアウト回避）
 // v2.8 2026-03-27 - クリーンアップ: /memory-vectorize一時エンドポイント削除（完了済み）
+// v2.9 2026-03-27 - HOTトピック通知: /memory-recent エンドポイント追加（直近24h以内の新着記憶取得）
 
 import { handleMemory } from './memory.js';
 import { _rowToMemory } from './memory.js';
@@ -52,7 +53,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '2.8',
+          version: '2.9',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -100,7 +101,12 @@ export default {
         return handleCORS(env, searchRes);
       }
 
-      // v2.8削除 - /memory-vectorize（一括embedding生成は完了済み。一時エンドポイント削除）
+      // v2.9追加 - HOTトピック通知用: 直近の新着記憶を取得
+      // GET /memory-recent?hours=24&limit=5 （どちらも省略可能）
+      if (path === 'memory-recent' && request.method === 'GET') {
+        const recentRes = await handleMemoryRecent(url, env);
+        return handleCORS(env, recentRes);
+      }
 
       if (path === 'search') {
         if (request.method !== 'POST') {
@@ -143,6 +149,37 @@ export default {
     }
   },
 };
+
+// v2.9追加 - HOTトピック通知用: 直近の新着記憶を取得
+// D1から直近N時間以内に追加された記憶を取得してフロントエンドに返す
+// prompt-builder.jsが「最近の新しい記憶」セクションとしてシステムプロンプトに注入する
+async function handleMemoryRecent(url, env) {
+  try {
+    const hours = Math.min(Math.max(parseInt(url.searchParams.get('hours')) || 24, 1), 168); // 1h〜7日
+    const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit')) || 5, 1), 10);
+
+    const sql = `
+      SELECT topic, summary, emotion_user, emotion_ai, emotion_comment, created_at, source
+      FROM memories
+      WHERE created_at > datetime('now', '-${hours} hours')
+      ORDER BY created_at DESC
+      LIMIT ?
+    `;
+
+    const stmt = env.DB.prepare(sql).bind(limit);
+    const { results } = await stmt.all();
+
+    return jsonResponse({
+      memories: results || [],
+      count: (results || []).length,
+      hours,
+      limit,
+    });
+  } catch (e) {
+    console.error('[memory-recent] エラー:', e.message);
+    return jsonError(`memory-recent エラー: ${e.message}`, 500);
+  }
+}
 
 async function relayGemini(request, env) {
   const body = await request.json();
