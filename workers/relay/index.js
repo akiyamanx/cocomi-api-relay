@@ -20,12 +20,15 @@
 // v2.7 2026-03-24 - ストリーミング中継対応（OpenAI/Claude、stream:trueで30秒タイムアウト回避）
 // v2.8 2026-03-27 - クリーンアップ: /memory-vectorize一時エンドポイント削除（完了済み）
 // v2.9 2026-03-27 - HOTトピック通知: /memory-recent エンドポイント追加（直近24h以内の新着記憶取得）
+// v3.0 2026-03-28 - 相談トピック連携: /consultation エンドポイント追加（claude.ai↔COCOMITalk会議室）
 
 import { handleMemory } from './memory.js';
 import { _rowToMemory } from './memory.js';
 import { handleMemorySearch } from './vector.js';
 import { handleSearch } from './search.js';
 import { handleMemoryImport } from './import.js';
+// v3.0追加 - 相談トピック連携
+import { handleGetConsultation, handlePostConsultation, handleResolveConsultation } from './consultation.js';
 import {
   isAllowedOrigin, isAuthenticated, handleCORS,
   jsonResponse, jsonError, fetchWithRetry
@@ -53,7 +56,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '2.9',
+          version: '3.0',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -102,10 +105,31 @@ export default {
       }
 
       // v2.9追加 - HOTトピック通知用: 直近の新着記憶を取得
-      // GET /memory-recent?hours=24&limit=5 （どちらも省略可能）
       if (path === 'memory-recent' && request.method === 'GET') {
         const recentRes = await handleMemoryRecent(url, env);
         return handleCORS(env, recentRes);
+      }
+
+      // v3.0追加 - 相談トピック連携
+      // GET /consultation?status=pending — 未回答の相談トピックを取得（COCOMITalk会議画面用）
+      // POST /consultation — 新しい相談を書き込む（claude.aiクロちゃん or MCP経由）
+      if (path === 'consultation') {
+        if (request.method === 'GET') {
+          const conRes = await handleGetConsultation(url, env);
+          return handleCORS(env, conRes);
+        }
+        if (request.method === 'POST') {
+          const conRes = await handlePostConsultation(request, env);
+          return handleCORS(env, conRes);
+        }
+        return handleCORS(env, jsonError('Method not allowed for /consultation', 405));
+      }
+
+      // v3.0追加 - 相談トピック回答書き戻し
+      // POST /consultation/resolve — 会議結果をDBに保存（アキヤが「DL＋DB保存」選択時のみ）
+      if (path === 'consultation/resolve' && request.method === 'POST') {
+        const resolveRes = await handleResolveConsultation(request, env);
+        return handleCORS(env, resolveRes);
       }
 
       if (path === 'search') {
@@ -151,11 +175,9 @@ export default {
 };
 
 // v2.9追加 - HOTトピック通知用: 直近の新着記憶を取得
-// D1から直近N時間以内に追加された記憶を取得してフロントエンドに返す
-// prompt-builder.jsが「最近の新しい記憶」セクションとしてシステムプロンプトに注入する
 async function handleMemoryRecent(url, env) {
   try {
-    const hours = Math.min(Math.max(parseInt(url.searchParams.get('hours')) || 24, 1), 168); // 1h〜7日
+    const hours = Math.min(Math.max(parseInt(url.searchParams.get('hours')) || 24, 1), 168);
     const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit')) || 5, 1), 10);
 
     const sql = `
@@ -233,7 +255,6 @@ async function relayClaude(request, env) {
   return jsonResponse(data, apiResponse.status);
 }
 
-// v2.6修正 - FormData中継時にfile content-typeを明示再構築
 async function relayWhisper(request, env) {
   const contentType = request.headers.get('Content-Type') || '';
   if (!contentType.includes('multipart/form-data')) {
@@ -273,7 +294,6 @@ async function relayWhisper(request, env) {
   return jsonResponse(data, apiResponse.status);
 }
 
-// v2.7 - OpenAIストリーミング中継
 async function relayStreamOpenAI(body, env) {
   const apiResponse = await fetch(API_ENDPOINTS.openai, {
     method: 'POST',
@@ -297,7 +317,6 @@ async function relayStreamOpenAI(body, env) {
   });
 }
 
-// v2.7 - Claudeストリーミング中継
 async function relayStreamClaude(body, env) {
   const apiResponse = await fetch(API_ENDPOINTS.claude, {
     method: 'POST',
@@ -322,7 +341,6 @@ async function relayStreamClaude(body, env) {
   });
 }
 
-// v1.2追加 - OpenAI TTS API中継
 async function relayTTS(request, env) {
   const body = await request.json();
   const allowedVoices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
