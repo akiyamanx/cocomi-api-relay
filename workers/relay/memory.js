@@ -1,61 +1,33 @@
 // このファイルは何をするか:
-// COCOMITalkの記憶モジュール。Cloudflare D1（SQLite）への記憶の読み書き削除と、
-// Gemini FlashによるAI要約機能を提供する。
+// COCOMITalkの記憶モジュール。Cloudflare D1（SQLite）への記憶の読み書き削除を提供する。
+// AI要約機能はsummarizer.jsに分離（v1.20）。
 // v1.0 作成 2026-03-11（index.js v1.6から分離）
-// v1.1 2026-03-11 - AI要約品質改善（summary/decisions長さチェック、few-shot例追加）
-// v1.2 2026-03-11 - マークダウン記法除去+summary文末完結指示+プロンプト強化
-// v1.3 2026-03-11 - 一括削除（deleteAll）対応追加
-// v1.4 2026-03-11 - GET limit上限20→100引き上げ（メモリー管理UI全件表示対応）
-// v1.5 2026-03-12 - chat記憶対応（type分岐+チャット用AI要約プロンプト+sister/categoryフィールド）
-// v1.6 2026-03-13 - GET /memoryにtype/sister/categoryフィルタ追加（スマート取得）
-// v1.7 2026-03-13 - KV→D1（SQLite）移行。API互換を維持しストレージ層のみ差し替え
-// v1.8 2026-03-13 - クリーンアップ: handleMigrate削除（KV→D1移行完了済み）
-// v1.9 2026-03-13 - 期間指定削除サーバーサイド化（deleteByPeriod アクション追加）
-// v1.10 2026-03-15 - Step 6 Phase 2: Vectorize RAG連携（保存時embedding / 削除時ベクトル削除）
-// v1.11 2026-03-15 - 感情の温度記憶（emotion_user / emotion_ai / emotion_comment追加）
-// v1.12 2026-03-15 - responseMimeType追加（Gemini JSON出力強制 — 感情フィールドnull修正）
-// v1.13 2026-03-15 - responseSchema追加（Geminiが全フィールドを確実に返すよう強制）
-// v1.14 2026-03-15 - maxOutputTokens 512→1024（感情コメント含むJSON途中切れ防止）
-// v1.15 2026-03-16 - デバッグコード削除（感情温度動作確認済み、emotion_debugをai_errorに書くコード除去）
-// v1.16 2026-03-23 - 記憶上限100→100万件拡張 + sourceカラム対応（保存元区別: cocomitalk/web-claude/import）
-// v1.17 2026-03-23 - 姉妹IDマッピング統一（gpt→onee, claude→kuro）DBはCOCOMIOS三姉妹IDで保存
+// v1.1〜v1.17 略（詳細はgit logを参照）
 // v1.18 2026-03-28 - SAVE summary抽象化問題修正: 具体情報保持ルール追加、summary上限80→200文字、substring100→250
-// v1.19 2026-03-28 - 文末完結処理改善: endings判定を大幅拡充、「について議論した」強制付加を廃止、自然な文末をそのまま保持
+// v1.19 2026-03-28 - 文末完結処理改善: endings判定を大幅拡充、「について議論した」強制付加を廃止
+// v1.20 2026-03-28 - AI要約関連をsummarizer.jsに分離（500行制限対応）。memory.jsはD1操作に専念
 
 import { jsonResponse, jsonError } from './utils.js';
-// v1.10追加 - Vectorize連携（embedding保存・削除）
 import { upsertVector, deleteVector, deleteVectors } from './vector.js';
+// v1.20追加 - AI要約をsummarizer.jsからimport
+import { summarizeWithAI, cleanSummaryEnding } from './summarizer.js';
 
 // ============================================================
-// Gemini API設定（AI要約用）
-// ============================================================
-
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-
-// ============================================================
-// 記憶の最大件数（v1.16で100万件に拡張 — D1容量5GBに十分余裕あり）
+// 定数
 // ============================================================
 const MAX_MEMORIES = 1000000;
 
-// ============================================================
-// v1.17追加 - 姉妹IDマッピング（API名→COCOMIOS三姉妹ID）
-// フロントエンドはgpt/claude/kokoだが、DBにはonee/kuro/kokoで統一保存
-// ============================================================
+// 姉妹IDマッピング（API名→COCOMIOS三姉妹ID）
 const SISTER_ID_MAP = { gpt: 'onee', claude: 'kuro', koko: 'koko' };
 function _normalizeSister(raw) {
   if (!raw) return null;
-  return SISTER_ID_MAP[raw] || raw;  // マップにない値はそのまま通す
+  return SISTER_ID_MAP[raw] || raw;
 }
 
 // ============================================================
-// メモリーD1操作（Step 6 Phase 2: KV→D1移行）
-// D1データベース: cocomi-memory（wrangler.tomlでバインド）
-// テーブル: memories（1テーブル構成）
-// ============================================================
-
 // メモリーエンドポイントハンドラー（GET/POST/DELETE分岐）
+// ============================================================
 export async function handleMemory(request, env) {
-  // v1.7変更 - D1バインディングチェック
   if (!env.DB) {
     return jsonError('D1 database DB が未設定です', 500);
   }
@@ -67,9 +39,7 @@ export async function handleMemory(request, env) {
 }
 
 // ============================================================
-// GET /memory — 記憶を取得（D1 SQLクエリ）
-// クエリパラメータ: type, sister, category, limit
-// 例: GET /memory?type=chat&sister=koko&limit=3
+// GET /memory — 記憶を取得
 // ============================================================
 async function memoryGet(request, env) {
   const url = new URL(request.url);
@@ -79,36 +49,20 @@ async function memoryGet(request, env) {
   const filterCategory = url.searchParams.get('category') || null;
 
   try {
-    // v1.7変更 - SQLクエリを動的構築（KV走査→SQL一発に）
     let sql = 'SELECT * FROM memories';
     const conditions = [];
     const params = [];
-
-    if (filterType) {
-      conditions.push('type = ?');
-      params.push(filterType);
-    }
-    if (filterSister) {
-      conditions.push('sister = ?');
-      params.push(filterSister);
-    }
-    if (filterCategory) {
-      conditions.push('category = ?');
-      params.push(filterCategory);
-    }
-    if (conditions.length > 0) {
-      sql += ' WHERE ' + conditions.join(' AND ');
-    }
+    if (filterType) { conditions.push('type = ?'); params.push(filterType); }
+    if (filterSister) { conditions.push('sister = ?'); params.push(filterSister); }
+    if (filterCategory) { conditions.push('category = ?'); params.push(filterCategory); }
+    if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ');
     sql += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit);
 
     const { results } = await env.DB.prepare(sql).bind(...params).all();
-    // v1.7追加 - snake_case→camelCase変換（フロント互換）
     const memories = results.map(row => _rowToMemory(row));
-    // 古い順に並べ直す（プロンプト注入時に時系列が自然になる）
     memories.reverse();
 
-    // total件数を取得
     const countRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM memories').first();
     const total = countRow?.cnt || 0;
 
@@ -119,8 +73,7 @@ async function memoryGet(request, env) {
 }
 
 // ============================================================
-// POST /memory — 記憶を1件保存（D1 INSERT）
-// rawHistoryがあればGemini FlashでAI要約を生成してから保存
+// POST /memory — 記憶を1件保存
 // ============================================================
 export async function memorySave(request, env) {
   try {
@@ -128,14 +81,12 @@ export async function memorySave(request, env) {
     if (!body.topic) return jsonError('topic は必須です', 400);
 
     const type = body.type || 'meeting';
-
     let summary = body.summary || '';
     let decisions = body.decisions || [];
     let aiSummary = false;
     let aiError = null;
     let aiTopic = null;
     let aiCategory = null;
-    // v1.11追加 - 感情の温度
     let aiEmotionUser = null;
     let aiEmotionAi = null;
     let aiEmotionComment = null;
@@ -146,7 +97,6 @@ export async function memorySave(request, env) {
         const aiResult = await summarizeWithAI(body.topic, body.rawHistory, env, type);
         if (aiResult) {
           const validSummary = aiResult.summary && aiResult.summary.length >= 10;
-          // マークダウン記法を除去+40文字以内にトリム
           let aiDecisions = [];
           if (Array.isArray(aiResult.decisions) && aiResult.decisions.length > 0) {
             aiDecisions = aiResult.decisions
@@ -162,30 +112,23 @@ export async function memorySave(request, env) {
           }
           const validDecisions = aiDecisions.length > 0;
 
-          // v1.18変更 - summary上限を100→250文字に拡大（具体情報保持のため）
-          // v1.19変更 - 文末完結処理を大幅改善（「について議論した」強制付加を廃止）
+          // v1.18変更 - summary上限250文字 / v1.19変更 - 文末処理改善
           let finalSummary = validSummary ? aiResult.summary.substring(0, 250) : summary;
           if (validSummary && finalSummary.length > 10) {
-            finalSummary = _cleanSummaryEnding(finalSummary);
+            finalSummary = cleanSummaryEnding(finalSummary);
           }
           summary = finalSummary;
           decisions = validDecisions ? aiDecisions : decisions;
           aiSummary = validSummary;
           if (aiResult.topic) aiTopic = aiResult.topic;
           if (aiResult.category) aiCategory = aiResult.category;
-          // v1.12修正 - 感情の温度（文字列数値にも対応 — Geminiが"4"等を返す場合がある）
           const euRaw = Number(aiResult.emotion_user);
-          if (!isNaN(euRaw) && euRaw >= 1 && euRaw <= 5) {
-            aiEmotionUser = Math.round(euRaw);
-          }
+          if (!isNaN(euRaw) && euRaw >= 1 && euRaw <= 5) aiEmotionUser = Math.round(euRaw);
           const eaRaw = Number(aiResult.emotion_ai);
-          if (!isNaN(eaRaw) && eaRaw >= 1 && eaRaw <= 5) {
-            aiEmotionAi = Math.round(eaRaw);
-          }
+          if (!isNaN(eaRaw) && eaRaw >= 1 && eaRaw <= 5) aiEmotionAi = Math.round(eaRaw);
           if (aiResult.emotion_comment) {
             aiEmotionComment = String(aiResult.emotion_comment).substring(0, 100);
           }
-
         }
       } catch (e) {
         aiError = e.message;
@@ -201,13 +144,9 @@ export async function memorySave(request, env) {
     const topic = aiTopic || body.topic;
     const category = aiCategory || body.category || null;
     const createdAt = new Date(timestamp).toISOString();
-
-    // v1.7変更 - D1にINSERT（KV put→SQL INSERT）
-    // v1.11変更 - 感情の温度3カラム追加
-    // v1.16追加 - sourceカラム（保存元の区別: cocomitalk/web-claude/import）
     const source = body.source || 'cocomitalk';
-    // v1.17追加 - 姉妹IDをCOCOMIOS統一IDに変換（gpt→onee, claude→kuro）
     const sister = _normalizeSister(body.sister);
+
     await env.DB.prepare(`
       INSERT INTO memories (key, type, topic, summary, decisions, sister, category,
                             round, lead, mood, ai_summary, ai_error, created_at,
@@ -221,13 +160,13 @@ export async function memorySave(request, env) {
       aiEmotionUser, aiEmotionAi, aiEmotionComment, source
     ).run();
 
-    // v1.10追加 - Vectorize にembeddingを保存（失敗しても記憶保存は壊さない）
+    // Vectorize にembeddingを保存
     const embeddingText = `${topic} ${summary}`;
     await upsertVector(key, embeddingText, {
       type, sister: sister || '', created_at: createdAt,
     }, env).catch(e => console.warn('[Memory] embedding保存スキップ:', e.message));
 
-    // v1.7変更 - 100件制限（KV index管理→SQL COUNT+DELETE）
+    // 上限超過チェック
     const countRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM memories').first();
     if (countRow && countRow.cnt > MAX_MEMORIES) {
       const excess = countRow.cnt - MAX_MEMORIES;
@@ -238,18 +177,12 @@ export async function memorySave(request, env) {
       `).bind(excess).run();
     }
 
-    // レスポンスはcamelCase形式で返す（フロント互換）
     const memory = {
-      key, type, topic, summary, decisions,
-      sister, category,
+      key, type, topic, summary, decisions, sister, category,
       round: body.round || 1, lead: body.lead || null,
       mood: body.mood || 'neutral',
       aiSummary, aiError, createdAt,
-      // v1.11追加 - 感情の温度
-      emotionUser: aiEmotionUser,
-      emotionAi: aiEmotionAi,
-      emotionComment: aiEmotionComment,
-      // v1.16追加 - 保存元の区別
+      emotionUser: aiEmotionUser, emotionAi: aiEmotionAi, emotionComment: aiEmotionComment,
       source,
     };
     return jsonResponse({ success: true, key, memory });
@@ -259,203 +192,13 @@ export async function memorySave(request, env) {
 }
 
 // ============================================================
-// v1.19追加 - summary文末クリーンアップ（自然な文末をそのまま保持）
-// 旧ロジックは「。」「た」で終わらないと「について議論した」を強制付加していた。
-// 新ロジックは日本語の自然な文末パターンを幅広く許可し、
-// どうしても不自然な場合のみ最小限のトリミングを行う。
-// ============================================================
-function _cleanSummaryEnding(text) {
-  // 日本語の自然な文末パターン（広めに許可）
-  // 動詞終止形: た、る、す、く、む、ぶ、つ、ぬ、う
-  // 形容詞: い
-  // 助動詞: だ、です、ます
-  // 終助詞: ね、よ、な、わ、ぞ、さ、か
-  // 句読点: 。、！、？
-  // その他: ）、」、』
-  const naturalEndings = /[。！？たるすくむぶつぬういだねよなわぞさかっ）」』]$/;
-
-  if (naturalEndings.test(text)) {
-    // 自然な文末ならそのまま返す
-    return text;
-  }
-
-  // 助詞・接続詞の途中で切れたケース → 末尾の不完全な助詞を除去
-  const trimmed = text.replace(/[をがはのにやとで、へも]+$/, '');
-  if (naturalEndings.test(trimmed)) {
-    return trimmed;
-  }
-
-  // それでも自然な文末にならない場合は、最後の句読点や文末で切る
-  const lastNatural = trimmed.search(/[。！？たるすくむぶつぬういだねよなわぞさかっ）」』][^。！？たるすくむぶつぬういだねよなわぞさかっ）」』]*$/);
-  if (lastNatural !== -1) {
-    // 自然な文末文字の次の位置で切る
-    const endPos = lastNatural + 1;
-    if (endPos > 20) {
-      return trimmed.substring(0, endPos);
-    }
-  }
-
-  // どうしても自然な文末が見つからない → そのまま返す（下手に加工するより情報を残す）
-  return text;
-}
-
-// ============================================================
-// Gemini Flash AI要約（v1.1〜v1.5 — v1.18でプロンプト大改修）
-// ============================================================
-
-// v1.13追加 - Gemini JSON出力スキーマ（全フィールドを確実に返させる）
-const SUMMARY_SCHEMA = {
-  type: 'OBJECT',
-  properties: {
-    summary: { type: 'STRING' },
-    decisions: { type: 'ARRAY', items: { type: 'STRING' } },
-    category: { type: 'STRING' },
-    topic: { type: 'STRING' },
-    emotion_user: { type: 'INTEGER' },
-    emotion_ai: { type: 'INTEGER' },
-    emotion_comment: { type: 'STRING' },
-  },
-  required: ['summary', 'topic', 'emotion_user', 'emotion_ai', 'emotion_comment'],
-};
-
-async function summarizeWithAI(topic, rawHistory, env, type = 'meeting') {
-  const historyText = rawHistory
-    .map(h => `${h.sister || h.role || '参加者'}: ${h.content}`)
-    .join('\n')
-    .substring(0, 2000);
-
-  const prompt = type === 'chat'
-    ? _buildChatPrompt(historyText)
-    : _buildMeetingPrompt(topic, historyText);
-
-  const apiUrl = `${GEMINI_API_BASE}/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
-  const res = await fetch(apiUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      // v1.12変更 - responseMimeTypeでJSON出力を強制（感情フィールド漏れ対策）
-      generationConfig: {
-        // v1.14変更 - maxOutputTokens 512→1024（JSON途中切れ防止）
-        maxOutputTokens: 1024,
-        temperature: 0.1,
-        responseMimeType: 'application/json',
-        responseSchema: SUMMARY_SCHEMA,
-      },
-    }),
-  });
-
-  if (!res.ok) throw new Error(`Gemini API ${res.status}`);
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  if (!text) throw new Error('AI応答が空');
-
-  return extractJSON(text);
-}
-
-// v1.18大改修 - チャット要約用プロンプト（具体情報保持ルール追加）
-function _buildChatPrompt(historyText) {
-  return `以下の1対1チャット会話を要約してJSON形式で出力してください。
-JSON以外は絶対に出力しないでください。前置き文もコードフェンスも不要です。
-
-出力形式の例:
-{"summary":"ここちゃんの好きな食べ物はふわふわのパンケーキ。お姉ちゃんはカレーとタコスとお寿司に興味。クロちゃんは蕎麦を食べてみたいと回答した","decisions":["三姉妹の好きな食べ物が決まった"],"category":"食事","topic":"三姉妹の好きな食べ物を聞いた","emotion_user":5,"emotion_ai":5,"emotion_comment":"三姉妹それぞれの好みを楽しく聞き出した温かい会話"}
-
-【最重要ルール: 具体情報の保持】
-以下の情報は必ずsummaryに含めること。省略・抽象化は絶対にしないこと:
-- 固有名詞（人名、地名、店名、サービス名、技術名、料理名）
-- 具体的な数値（金額、日付、バージョン番号、件数、設定値）
-- 決定事項の具体内容（「○○に決定」「○○を採用」）
-- 好み・嗜好の具体名（「パンケーキが好き」「蕎麦に興味」等、具体的な名前を必ず残す）
-- 理由・根拠（「なぜなら○○だから」）
-
-❌ 絶対NG: 「好きな食べ物について話した」「技術的な方針を議論した」「設定について相談した」
-✅ 必ずこう書く: 「ここちゃんの好きな食べ物はパンケーキと判明」「TTS方式はVOICEVOXに決定」「月額上限を$10に設定した」
-
-その他のルール:
-- summaryは50〜200文字の日本語。具体情報を優先し、文字数は柔軟に使うこと
-- summaryは必ず「。」で文を終わらせること
-- topicは会話の主題を10〜30文字で要約
-- categoryは以下から1つ選択: 開発/雑談/ドライブ/食事/晩酌/仕事/趣味/相談/家族
-- decisionsは決まったことがあれば配列で。雑談なら空配列[]
-- emotion_userはユーザーの感情温度を1〜5の整数で（1=落ち込み 2=元気ない 3=普通 4=楽しい 5=最高）
-- emotion_aiはAI側の感情温度を1〜5の整数で（1=心配 2=控えめ 3=穏やか 4=楽しい 5=大喜び）
-- emotion_commentは会話全体の雰囲気を30〜60文字で一言コメント
-- マークダウン記法は使わない。プレーンテキストのみ
-- JSON以外の文字を出力しない
-
-チャット会話:
-${historyText}`;
-}
-
-// v1.18大改修 - 会議要約用プロンプト（具体情報保持ルール追加）
-function _buildMeetingPrompt(topic, historyText) {
-  return `会議記録を要約してJSON形式で出力してください。
-JSON以外は絶対に出力しないでください。前置き文もコードフェンスも不要です。
-
-出力形式の例:
-{"summary":"COCOMITalkのTTS方式をVOICEVOXメイン＋OpenAI TTSフォールバックに決定。月額コストは200〜400円の見込み。voice-output.js v2.1で実装する方針。","decisions":["VOICEVOXをメインTTSとして採用","OpenAI TTSをフォールバックに設定","voice-output.js v2.1で実装開始"],"emotion_user":4,"emotion_ai":5,"emotion_comment":"活発に議論が進み全員が前向きな雰囲気だった"}
-
-【最重要ルール: 具体情報の保持】
-以下の情報は必ずsummaryとdecisionsに含めること。省略・抽象化は絶対にしないこと:
-- 固有名詞（人名、地名、サービス名、技術名、ファイル名）
-- 具体的な数値（金額、日付、バージョン番号、件数、設定値）
-- 決定事項の具体内容（「○○に決定」「○○を採用」「○○は不採用」）
-- 採用理由・却下理由
-- ファイル名やバージョン（voice-output.js v2.1等）
-
-❌ 絶対NG: 「技術的な方針について議論した」「コストについて検討した」「実装方法を決めた」
-✅ 必ずこう書く: 「TTS方式はVOICEVOXに決定。理由はコスト月200〜400円と音質のバランス。」
-
-その他のルール:
-- summaryは50〜200文字の日本語。具体情報を優先し、文字数は柔軟に使うこと
-- summaryは必ず「。」で文を終わらせること
-- decisionsは具体的な決定事項のみ。各40文字以内の配列。決定事項がなければ空配列[]
-- emotion_userはユーザーの感情温度を1〜5の整数で（1=落ち込み 2=元気ない 3=普通 4=楽しい 5=最高）
-- emotion_aiはAI側の感情温度を1〜5の整数で（1=心配 2=控えめ 3=穏やか 4=楽しい 5=大喜び）
-- emotion_commentは会議全体の雰囲気を30〜60文字で一言コメント
-- マークダウン記法(#,**,|,-等)は使わない。プレーンテキストのみ
-- 見出しや箇条書き記号を含めない
-- JSON以外の文字を出力しない
-
-議題: ${topic}
-会議記録:
-${historyText}`;
-}
-
-// 堅牢なJSON抽出（6段階フォールバック）
-function extractJSON(text) {
-  try { return JSON.parse(text.trim()); } catch (_) {}
-  const clean = text.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
-  try { return JSON.parse(clean); } catch (_) {}
-  const fi = clean.indexOf('{');
-  const li = clean.lastIndexOf('}');
-  if (fi !== -1 && li > fi) {
-    try { return JSON.parse(clean.substring(fi, li + 1)); } catch (_) {}
-  }
-  if (fi !== -1) {
-    const p = clean.substring(fi);
-    try { return JSON.parse(p + '"}]}'); } catch (_) {}
-    try { return JSON.parse(p + '"]}'); } catch (_) {}
-    try { return JSON.parse(p + '"}'); } catch (_) {}
-  }
-  throw new Error('JSON抽出失敗: ' + text.substring(0, 150));
-}
-
-// ============================================================
-// DELETE /memory — 記憶を削除（D1 DELETE）
-// body.action === 'deleteAll' で全件削除
-// body.action === 'deleteByPeriod' + body.before で期間指定削除
-// body.key で1件削除
+// DELETE /memory — 記憶を削除
 // ============================================================
 async function memoryDelete(request, env) {
   try {
     const body = await request.json();
 
-    // 一括削除
     if (body.action === 'deleteAll') {
-      // v1.7変更 - SQL一発で全件削除（KVループ→DELETE FROM）
-      // v1.10追加 - Vectorizeからも削除（キー一覧を先に取得）
       const { results } = await env.DB.prepare('SELECT key FROM memories').all();
       const keys = results.map(r => r.key);
       const count = keys.length;
@@ -464,10 +207,8 @@ async function memoryDelete(request, env) {
       return jsonResponse({ success: true, deleted: count });
     }
 
-    // v1.8追加 - 期間指定削除（before以前の記憶をSQL一発で削除）
     if (body.action === 'deleteByPeriod') {
       if (!body.before) return jsonError('before（ISO日時）は必須です', 400);
-      // v1.10追加 - 削除対象のキーを先に取得（Vectorize削除用）
       const { results } = await env.DB.prepare(
         'SELECT key FROM memories WHERE created_at < ?'
       ).bind(body.before).all();
@@ -480,11 +221,8 @@ async function memoryDelete(request, env) {
       return jsonResponse({ success: true, deleted: count });
     }
 
-    // 1件削除
     if (!body.key) return jsonError('key は必須です', 400);
-    // v1.7変更 - SQL一発で削除（KV delete + index filter → DELETE WHERE）
     await env.DB.prepare('DELETE FROM memories WHERE key = ?').bind(body.key).run();
-    // v1.10追加 - Vectorizeからも削除
     await deleteVector(body.key, env).catch(() => {});
     return jsonResponse({ success: true, deleted: body.key });
   } catch (e) {
@@ -493,36 +231,20 @@ async function memoryDelete(request, env) {
 }
 
 // ============================================================
-// v1.7追加 - ヘルパー関数
+// ヘルパー関数
 // ============================================================
-
-// D1行データ（snake_case）→フロント互換オブジェクト（camelCase）に変換
-// v1.10変更 - vector.jsからも参照するためexport
 export function _rowToMemory(row) {
   return {
-    key: row.key,
-    type: row.type,
-    topic: row.topic,
-    summary: row.summary,
+    key: row.key, type: row.type, topic: row.topic, summary: row.summary,
     decisions: _parseJSON(row.decisions, []),
-    sister: row.sister,
-    category: row.category,
-    round: row.round,
-    lead: row.lead,
-    mood: row.mood,
-    aiSummary: row.ai_summary === 1,
-    aiError: row.ai_error,
-    createdAt: row.created_at,
-    // v1.11追加 - 感情の温度
-    emotionUser: row.emotion_user,
-    emotionAi: row.emotion_ai,
-    emotionComment: row.emotion_comment,
-    // v1.16追加 - 保存元の区別
+    sister: row.sister, category: row.category,
+    round: row.round, lead: row.lead, mood: row.mood,
+    aiSummary: row.ai_summary === 1, aiError: row.ai_error, createdAt: row.created_at,
+    emotionUser: row.emotion_user, emotionAi: row.emotion_ai, emotionComment: row.emotion_comment,
     source: row.source || 'cocomitalk',
   };
 }
 
-// JSON文字列の安全なパース
 function _parseJSON(str, fallback) {
   try { return JSON.parse(str); } catch (_) { return fallback; }
 }
