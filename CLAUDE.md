@@ -1,7 +1,7 @@
 # COCOMI Agent Hub Phase 1
 
 <!-- クロちゃんチェック: ドキュメントバージョンを冒頭に明記 -->
-<!-- Document Version: v1.0.0 -->
+<!-- Document Version: v1.6.0 -->
 
 ## プロジェクト概要
 既存の `cocomi-api-relay` リポジトリをモノレポ化し、既存の relay Worker とは別に、新規の agent Worker を追加するプロジェクト。  
@@ -30,38 +30,36 @@
 - 破壊的変更前に migration を用意する
 - 認証トークンや秘密情報をログ出力しない
 - エラー文言はユーザー向け表示と内部ログを分ける
-<!-- クロちゃんチェック: コメント・バージョンルールの具体的な書式を追記 -->
 
 ## バージョニング
-- ドキュメント版: `v1.0.0`
+- ドキュメント版: `v1.6.0`
 - 実装ファイル冒頭コメント例: `// Version: 1.0.0 — agent-hub/index.js`
 - migration は連番管理すること（`0001_`, `0002_`, ...）
 - バージョン更新タイミング: 各Stepの完了時にそのStepで変更したファイルのパッチバージョンを上げる
-<!-- クロちゃんチェック: バージョン記載の具体例とタイミングを追記 -->
 
 ## 技術スタック
 - Cloudflare Workers
 - Cloudflare D1
-- [要確認] Cloudflare KV
+- Cloudflare KV（ロールバック用に残存）
 - JavaScript（ES Modules形式）
-- Wrangler（v3系を想定）
+- Wrangler（v3系）
 - Git / GitHub
 - GitHub Pages
 - LINE連携
-- [要確認] Discord / Slack 等のWebhook通知
-<!-- クロちゃんチェック: JS形式とWranglerバージョンを明記 -->
 
 ## 想定ファイル構成
 ```txt
 cocomi-api-relay/
 ├── workers/
 │   ├── relay/
-│   │   ├── index.js
-│   │   ├── memory.js
-│   │   ├── import.js
-│   │   ├── vector.js
-│   │   ├── search.js
-│   │   ├── utils.js
+│   │   ├── index.js          # v3.1 メインルーティング
+│   │   ├── memory.js         # v1.20 記憶CRUD
+│   │   ├── summarizer.js     # v1.2 AI要約
+│   │   ├── import.js         # v1.5 記憶インポート
+│   │   ├── vector.js         # Vectorize RAG
+│   │   ├── search.js         # リアルタイム検索
+│   │   ├── consultation.js   # v1.0 相談トピック連携
+│   │   ├── utils.js          # 共通ユーティリティ
 │   │   └── wrangler.toml
 │   └── agent-hub/
 │       ├── index.js          # エントリポイント・ルーティング
@@ -74,17 +72,15 @@ cocomi-api-relay/
 │       ├── utils.js           # 通知・ヘルパー
 │       └── wrangler.toml
 ├── shared/
-│   ├── auth.js               # 認証チェック共通
 │   ├── constants.js           # 定数・テーブル一覧
 │   └── d1-helpers.js          # DB操作ラッパー・SQL検査
 ├── migrations/
-│   ├── 0001_initial.sql       # 既存relay用（既存）
-│   └── 0002_agent_hub.sql     # agent-hub用テーブル
-├── wrangler.toml              # relay用（既存）
-├── wrangler.agent.toml        # agent-hub用
+│   └── agent/                 # agent-hub用マイグレーション
+├── .github/
+│   └── workflows/
+│       └── deploy-worker.yml  # v3.0 自動デプロイ（relay + agent-hub + CI + LINE通知）
 └── package.json
 ```
-<!-- クロちゃんチェック: 各ファイルの役割コメントを追記 -->
 
 ## D1利用ルール
 - relay Worker と agent-hub Worker は同一D1を共有する
@@ -98,18 +94,15 @@ cocomi-api-relay/
 - 保護対象テーブル:
   - `memories`
   - `memory_metadata`
-  - [要確認] relay側の他テーブル一覧
+  - `consultation_topics`
 - agent-hub は保護対象テーブルへ **SELECT専用**
 - INSERT / UPDATE / DELETE / DROP / ALTER を保護対象へ実行しない
 - **d1-helpers.js 内の `safeExecute()` 関数を経由しないDB書き込みは禁止**
-<!-- クロちゃんチェック: 具体的な関数名でガード方法を明記 -->
 
 ## Worker間通信ルール
-- Phase 1前半は **HTTP fetch + 共有認証トークン** を暫定採用
-- Sprint 3終了時（Step 10完了時）に Service Binding を再評価する
-- relay → agent-hub の中継ルートを設ける（relay側に `/agent/*` プロキシを追加）
-- 認証ヘッダ名は [要確認]（暫定: `X-Agent-Auth-Token`）
-<!-- クロちゃんチェック: 暫定ヘッダ名を提案として追記 -->
+- **Service Binding採用済み**（relay→agent-hub）
+- wrangler.tomlのservicesバインディングで設定
+- 認証ヘッダ名: `X-COCOMI-AUTH`
 
 ## 通知ルール
 - コスト80%到達
@@ -118,16 +111,15 @@ cocomi-api-relay/
 - task failed
 - emergency stop
 以上は通知対象とする方針。  
-通知先は [要確認]。  
+通知先: LINE（LINE_NOTIFY_TOKEN）  
 **通知処理の失敗は主処理をブロックしない（try-catchで握りつぶし、audit logに記録する）**
-<!-- クロちゃんチェック: 通知失敗時の挙動を明記 -->
 
 ## 開発環境
-- 端末: Galaxy
+- 端末: Galaxy（スマホ＋タブレット）
 - シェル環境: Termux
-- 実装支援: Claude Code
+- 実装支援: Claude Code（タブレット）+ claude.ai（設計・アーキテクチャ）
 - 公開/管理: GitHub Pages
-- デプロイ: Wrangler
+- デプロイ: GitHub Actions（deploy-worker.yml v3.0）— masterブランチpushで自動デプロイ
 
 ## Claude Code向け作業姿勢
 - 各ステップで変更範囲を明確にする
@@ -137,14 +129,35 @@ cocomi-api-relay/
 - 1セッションで完了できる粒度で進める
 - **各ステップ開始時に「このステップで作成/変更するファイル一覧」を最初に列挙してから作業に入る**
 - **各ステップ完了時に「完了条件チェックリスト」を自己確認してから完了報告する**
-<!-- クロちゃんチェック: Claude Codeの作業開始・終了時の手順を追記 -->
+
 ## Termux環境の制約事項
-- Wranglerはarm64非対応のため、Termuxで直接`wrangler deploy`が動かない場合がある
-- 代替策1: Cloudflareダッシュボードから手動デプロイ
-- 代替策2: GitHub Actions経由でCI/CDデプロイ（安全ガイド参照）
+- Wranglerはarm64非対応のため、Termuxで直接`wrangler deploy`が動かない
+- **デプロイはGitHub Actions経由で自動実行される**（masterブランチにpushするだけでOK）
+- `.github/workflows/`へのファイルpushはMCP経由では403エラー（Termuxから手動push必要）
 - D1マイグレーションもダッシュボードのD1 Consoleから手動実行可能
 - curlでのAPI確認時は `-H "Origin: https://akiyamanx.github.io"` を付与（CORS対応）
-<!-- クロちゃんチェック: Termux制約を追記（議事録で議論されなかった実運用上の制約） -->
+
+## ネット検索の活用ルール（v1.6追加）
+Claude Codeは組み込みのWebSearch/WebFetchツールでネット検索が可能。
+作業中に不明点があれば**自分で調べて解決する**こと。推測で進めるのは禁止。
+
+### いつ検索すべきか
+- APIのエラーコードやエラーメッセージの意味がわからない時
+- Cloudflare Workers / D1 / Vectorize の仕様・制限を確認したい時
+- npm パッケージの使い方やバージョン互換性を調べたい時
+- 新しいAPI機能やベストプラクティスを確認したい時
+- 既知のバグや回避策がないか調べたい時
+- wrangler CLIのコマンドやオプションを確認したい時
+
+### 検索のコツ
+- 検索クエリは英語で短く具体的に（例: `Cloudflare D1 datetime function`）
+- エラーメッセージはそのまま検索ワードに含める
+- 公式ドキュメント（developers.cloudflare.com, docs.anthropic.com等）を優先する
+- WebFetchで公式ドキュメントの特定ページを直接取得するのも有効
+
+### 検索してはいけないケース
+- COCOMI固有の内部仕様（DB名、テーブル構造等）→ このCLAUDE.mdや既存コードを参照
+- APIキーやシークレット情報を含む検索
 
 ## セキュリティ注意事項
 - 環境変数（APIキー・認証トークン等）はCloudflare Secrets/環境変数に設定し、コードにハードコードしない
