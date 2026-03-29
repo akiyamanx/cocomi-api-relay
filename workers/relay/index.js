@@ -21,6 +21,7 @@
 // v2.8 2026-03-27 - クリーンアップ: /memory-vectorize一時エンドポイント削除（完了済み）
 // v2.9 2026-03-27 - HOTトピック通知: /memory-recent エンドポイント追加（直近24h以内の新着記憶取得）
 // v3.0 2026-03-28 - 相談トピック連携: /consultation エンドポイント追加（claude.ai↔COCOMITalk会議室）
+// v3.1 2026-03-30 - Sprint 1代弁問題応急処置: /memory-recentにsisterカラム追加
 
 import { handleMemory } from './memory.js';
 import { _rowToMemory } from './memory.js';
@@ -56,7 +57,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '3.0',
+          version: '3.1',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -175,13 +176,15 @@ export default {
 };
 
 // v2.9追加 - HOTトピック通知用: 直近の新着記憶を取得
+// v3.1更新 - sisterカラム追加（代弁問題Sprint 1: 誰の記憶かをフロントで表示するため）
 async function handleMemoryRecent(url, env) {
   try {
     const hours = Math.min(Math.max(parseInt(url.searchParams.get('hours')) || 24, 1), 168);
     const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit')) || 5, 1), 10);
 
+    // v3.1変更 - sisterカラムを追加（代弁禁止テンプレートで「誰の記憶か」を表示するため）
     const sql = `
-      SELECT topic, summary, emotion_user, emotion_ai, emotion_comment, created_at, source
+      SELECT topic, summary, emotion_user, emotion_ai, emotion_comment, sister, created_at, source
       FROM memories
       WHERE created_at > datetime('now', '-${hours} hours')
       ORDER BY created_at DESC
