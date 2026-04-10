@@ -22,6 +22,7 @@
 // v2.9 2026-03-27 - HOTトピック通知: /memory-recent エンドポイント追加（直近24h以内の新着記憶取得）
 // v3.0 2026-03-28 - 相談トピック連携: /consultation エンドポイント追加（claude.ai↔COCOMITalk会議室）
 // v3.1 2026-03-30 - Sprint 1代弁問題応急処置: /memory-recentにsisterカラム追加
+// v3.2 2026-04-10 - バックグラウンド会議: /consultation/auto-meeting エンドポイント追加（meeting.js）
 
 import { handleMemory } from './memory.js';
 import { _rowToMemory } from './memory.js';
@@ -30,6 +31,8 @@ import { handleSearch } from './search.js';
 import { handleMemoryImport } from './import.js';
 // v3.0追加 - 相談トピック連携
 import { handleGetConsultation, handlePostConsultation, handleResolveConsultation } from './consultation.js';
+// v3.2追加 - バックグラウンド三姉妹会議
+import { handleAutoMeeting } from './meeting.js';
 import {
   isAllowedOrigin, isAuthenticated, handleCORS,
   jsonResponse, jsonError, fetchWithRetry
@@ -57,7 +60,7 @@ export default {
         return handleCORS(env, jsonResponse({
           status: 'ok',
           service: 'cocomi-api-relay',
-          version: '3.1',
+          version: '3.2',
           timestamp: new Date().toISOString(),
         }));
       }
@@ -131,6 +134,14 @@ export default {
       if (path === 'consultation/resolve' && request.method === 'POST') {
         const resolveRes = await handleResolveConsultation(request, env);
         return handleCORS(env, resolveRes);
+      }
+
+      // v3.2追加 - バックグラウンド三姉妹会議
+      // POST /consultation/auto-meeting — WEBクロちゃんが三姉妹会議を自動進行(アキヤ不在でもOK)
+      // body: { topic, question, context?, consultation_id?, models? }
+      if (path === 'consultation/auto-meeting' && request.method === 'POST') {
+        const meetingRes = await handleAutoMeeting(request, env);
+        return handleCORS(env, meetingRes);
       }
 
       if (path === 'search') {
