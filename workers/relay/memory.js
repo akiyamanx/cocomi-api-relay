@@ -6,9 +6,11 @@
 // v1.18 2026-03-28 - SAVE summary抽象化問題修正: 具体情報保持ルール追加、summary上限80→200文字、substring100→250
 // v1.19 2026-03-28 - 文末完結処理改善: endings判定を大幅拡充、「について議論した」強制付加を廃止
 // v1.20 2026-03-28 - AI要約関連をsummarizer.jsに分離（500行制限対応）。memory.jsはD1操作に専念
+// v1.21 2026-04-12 - 重複チェック追加（save_memory経路の未対応解消、import.jsロジック流用、2段階チェックでコスト最適化）
 
 import { jsonResponse, jsonError } from './utils.js';
-import { upsertVector, deleteVector, deleteVectors } from './vector.js';
+// v1.21追加 - searchVectors を import（重複チェック用）
+import { upsertVector, deleteVector, deleteVectors, searchVectors } from './vector.js';
 // v1.20追加 - AI要約をsummarizer.jsからimport
 import { summarizeWithAI, cleanSummaryEnding } from './summarizer.js';
 
@@ -16,12 +18,43 @@ import { summarizeWithAI, cleanSummaryEnding } from './summarizer.js';
 // 定数
 // ============================================================
 const MAX_MEMORIES = 1000000;
+// v1.21追加 - 重複チェック閾値（import.jsと統一、類似度スコアがこの値以上なら重複とみなす）
+const DUPLICATE_THRESHOLD = 0.85;
 
 // 姉妹IDマッピング（API名→COCOMIOS三姉妹ID）
 const SISTER_ID_MAP = { gpt: 'onee', claude: 'kuro', koko: 'koko' };
 function _normalizeSister(raw) {
   if (!raw) return null;
   return SISTER_ID_MAP[raw] || raw;
+}
+
+// ============================================================
+// v1.21追加 - 重複チェックヘルパー関数
+// Vectorize類似度検索で既存記憶との重複を検出する
+// 戻り値: null = 重複なし（保存続行OK） / オブジェクト = 重複検出（スキップ用レスポンス）
+// import.js の _insertOne 内の重複チェックと完全に同じロジック
+// ============================================================
+async function _checkDuplicate(topic, summary, env) {
+  // 環境変数がない場合はチェックスキップ（テスト環境・開発環境への配慮）
+  if (!env.VECTORIZE || !env.GEMINI_API_KEY) return null;
+  try {
+    // checkText の作り方も import.js と完全統一
+    const checkText = `${topic} ${summary.substring(0, 200)}`;
+    const similar = await searchVectors(checkText, {}, 1, env);
+    if (similar.length > 0 && similar[0].score >= DUPLICATE_THRESHOLD) {
+      return {
+        success: false,
+        skipped: true,
+        reason: `重複スキップ: 類似記憶あり（スコア${similar[0].score.toFixed(3)}、キー:${similar[0].id}）`,
+        existingKey: similar[0].id,
+      };
+    }
+    return null;
+  } catch (e) {
+    // 重複チェック失敗時は保存を続行（チェックできないだけで止めない）
+    console.warn('[Memory] 重複チェックスキップ:', e.message);
+    return null;
+  }
 }
 
 // ============================================================
@@ -79,6 +112,15 @@ export async function memorySave(request, env) {
   try {
     const body = await request.json();
     if (!body.topic) return jsonError('topic は必須です', 400);
+
+    // v1.21追加 - 段階1: AI要約前の重複チェック（コスト最優先）
+    // body.summary が既に実用的な長さで入ってる場合（WEBクロちゃんのsave_memory経路など）は
+    // AI要約を回す前にこの時点でチェック → 重複ならAPIコストゼロでスキップ
+    // body.force === true で強制保存可能
+    if (!body.force && body.summary && body.summary.trim().length >= 10) {
+      const dup = await _checkDuplicate(body.topic, body.summary, env);
+      if (dup) return jsonResponse(dup);
+    }
 
     const type = body.type || 'meeting';
     let summary = body.summary || '';
@@ -138,6 +180,15 @@ export async function memorySave(request, env) {
     }
 
     if (!summary) return jsonError('summary は必須です', 400);
+
+    // v1.21追加 - 段階2: AI要約後の重複チェック（rawHistory経由のケース向け）
+    // AI要約で summary が生成された場合、その最終結果でもう一度チェック
+    // 段階1ですり抜けた or 段階1をスキップしたケースをここで捕まえる
+    // AI要約のAPIコストは既に払った後だが、D1/Vectorize保存とMAX_MEMORIES削除処理は節約できる
+    if (!body.force && aiSummary) {
+      const dup = await _checkDuplicate(aiTopic || body.topic, summary, env);
+      if (dup) return jsonResponse(dup);
+    }
 
     const timestamp = Date.now();
     const key = `${type}:${timestamp}`;
