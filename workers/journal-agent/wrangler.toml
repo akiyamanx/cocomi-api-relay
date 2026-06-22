@@ -1,0 +1,25 @@
+# このファイルは何をするか:
+# cocomi-journal-agent Worker の設定（デプロイ先の名前・binding・変数を定義）
+# v1.0 2026-06-22 (Day92) - 初版・MVP本番デプロイ用
+# 設計書: cocomi-capsules/designs/ジャーナリング自律エージェント_統合設計書_v1.0_2026-06-19.md
+
+name = "cocomi-journal-agent"
+main = "index.js"
+compatibility_date = "2026-03-07"
+
+[vars]
+ALLOWED_ORIGIN = "https://akiyamanx.github.io"
+# モデルは env で上書き可（未指定なら orchestrator/safety-check の既定 claude-sonnet-4-6）
+ORCHESTRATOR_MODEL = "claude-sonnet-4-6"
+SAFETY_MODEL = "claude-sonnet-4-6"
+# 実際の Worker URL: https://cocomi-journal-agent.k-akiyaman.workers.dev
+
+# Secrets は wrangler コマンドで設定（絶対にここに書かない！）
+# wrangler secret put ANTHROPIC_API_KEY
+# wrangler secret put COCOMI_AUTH_TOKEN
+
+# D1データベース（cocomi-memory を共有 — journal_entries テーブルはここ）
+[[d1_databases]]
+binding = "DB"
+database_name = "cocomi-memory"
+database_id = "1b164b3b-a737-4721-aa07-86d6c821c8e6"
