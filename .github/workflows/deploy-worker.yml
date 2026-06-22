@@ -1,5 +1,6 @@
 # COCOMI API Relay + Agent Hub - Cloudflare Worker自動デプロイ＋CI
 # モノレポ構成対応（workers/relay/ + workers/agent-hub/）
+# v4.0 2026-06-22 - journal-agent追加
 # v3.0 2026-03-22 - モノレポ化対応（relay + agent-hub両方デプロイ）
 # v2.0 2026-03-10 - CI 500行チェック＋LINE通知＋KV対応
 # v1.0 2026-03-07 - 初期作成
@@ -21,8 +22,8 @@ jobs:
         run: |
           echo "🔍 COCOMI CI: ファイル行数チェック開始"
           FAIL=0
-          # workers/relay, workers/agent-hub, shared の全JSファイルをチェック
-          for f in workers/relay/*.js workers/agent-hub/*.js shared/*.js; do
+          # workers/relay, workers/agent-hub, workers/journal-agent, shared の全JSファイルをチェック
+          for f in workers/relay/*.js workers/agent-hub/*.js workers/journal-agent/*.js shared/*.js; do
             [ -f "$f" ] || continue
             LINES=$(wc -l < "$f")
             if [ "$LINES" -gt 500 ]; then
@@ -51,6 +52,13 @@ jobs:
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           workingDirectory: workers/agent-hub
+
+      # journal-agent Workerデプロイ（新規 — cocomi-journal-agent）
+      - name: Deploy journal-agent Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          workingDirectory: workers/journal-agent
 
       # LINE通知（成功時）
       - name: LINE通知（成功）
