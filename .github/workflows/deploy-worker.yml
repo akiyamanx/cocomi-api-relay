@@ -1,5 +1,6 @@
 # COCOMI API Relay + Agent Hub - Cloudflare Worker自動デプロイ＋CI
 # モノレポ構成対応（workers/relay/ + workers/agent-hub/）
+# v4.1 2026-07-15 - LINE Notify残骸撤去（2025-03終了済API+完全沈黙構造=無言の失敗の見本・課題4解決）
 # v4.0 2026-06-22 - journal-agent追加
 # v3.0 2026-03-22 - モノレポ化対応（relay + agent-hub両方デプロイ）
 # v2.0 2026-03-10 - CI 500行チェック＋LINE通知＋KV対応
@@ -60,33 +61,3 @@ jobs:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           workingDirectory: workers/journal-agent
 
-      # LINE通知（成功時）
-      - name: LINE通知（成功）
-        if: success()
-        env:
-          LINE_TOKEN: ${{ secrets.LINE_NOTIFY_TOKEN }}
-        run: |
-          if [ -n "$LINE_TOKEN" ]; then
-            MSG="✅ COCOMI Workers デプロイ成功！
-          📦 commit: ${GITHUB_SHA::7}
-          🔧 relay: https://cocomi-api-relay.k-akiyaman.workers.dev/health
-          🤖 agent-hub: cocomi-agent-hub deployed"
-            curl -s -X POST https://notify-api.line.me/api/notify \
-              -H "Authorization: Bearer ${LINE_TOKEN}" \
-              -F "message=${MSG}" > /dev/null 2>&1 || true
-          fi
-
-      # LINE通知（失敗時）
-      - name: LINE通知（失敗）
-        if: failure()
-        env:
-          LINE_TOKEN: ${{ secrets.LINE_NOTIFY_TOKEN }}
-        run: |
-          if [ -n "$LINE_TOKEN" ]; then
-            MSG="❌ COCOMI Workers デプロイ失敗！
-          📦 commit: ${GITHUB_SHA::7}
-          🔗 https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            curl -s -X POST https://notify-api.line.me/api/notify \
-              -H "Authorization: Bearer ${LINE_TOKEN}" \
-              -F "message=${MSG}" > /dev/null 2>&1 || true
-          fi
