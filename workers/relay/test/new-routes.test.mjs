@@ -149,6 +149,8 @@ test('/gemini-tts: アプリの送信形 → interactions へ1回、WAVを返す
   assert.equal(sent.model, 'gemini-3.8-flash-lite-tts');
   assert.deepEqual(sent.generation_config, { speech_config: [{ voice: 'Kore' }] });
   assert.equal(sent.input[0].content[0].annotations[0].style, 'cheerful');
+  assert.match(r.headers.get('Server-Timing'), /^upstream-ttfb;dur=\d+;desc="google headers", upstream;dur=\d+;desc="google total"$/);
+  assert.match(r.headers.get('Access-Control-Expose-Headers'), /Server-Timing/);
 });
 test('/gemini-tts: 入力検証（声・モデル・長さ）', async () => {
   mockFetch(() => { throw new Error('should not call'); });
@@ -163,7 +165,14 @@ test('/gemini-tts: 上流エラーは再試行せず定型JSON（401→502）', 
   mockFetch(() => new Response('secret detail', { status: 401 }));
   const r = await worker.fetch(req('/gemini-tts', { text: 'a', voice: 'Kore' }), ENV);
   assert.equal(r.status, 502); assert.equal(calls.length, 1);
+  assert.match(r.headers.get('Server-Timing'), /^upstream-ttfb;dur=\d+;desc="google headers", upstream;dur=\d+;desc="google total"$/);
   const j = await r.json(); assert.equal(j.upstream_status, 401); assert.ok(!JSON.stringify(j).includes('secret'));
+});
+test('/gemini-tts: 上流に届かない時は504＋upstream の時間だけ', async () => {
+  mockFetch(() => { throw new TypeError('network down'); });
+  const r = await worker.fetch(req('/gemini-tts', { text: 'a', voice: 'Kore' }), ENV);
+  assert.equal(r.status, 504);
+  assert.match(r.headers.get('Server-Timing'), /^upstream;dur=\d+;desc="google total"$/);
 });
 
 // ---- 既存ルートは従来どおり ----

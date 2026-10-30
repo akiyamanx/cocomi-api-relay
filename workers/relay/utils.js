@@ -2,6 +2,7 @@
 // cocomi-api-relay Workerの共通ユーティリティ関数。
 // JSON応答生成、エラー応答、CORS処理、認証チェック、リトライfetchを提供する。
 // v1.0 作成 2026-03-11（index.js v1.6から分離）
+// v1.1 2026-10-30 - 葵(Aoi): CORS に Access-Control-Expose-Headers: Server-Timing を追加
 
 // ============================================================
 // リトライ設定（安全ガイド準拠: 最大3回）
@@ -35,6 +36,7 @@ export function handleCORS(env, response) {
   headers.set('Access-Control-Allow-Origin', env.ALLOWED_ORIGIN || '*');
   headers.set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   headers.set('Access-Control-Allow-Headers', 'Content-Type, X-COCOMI-AUTH');
+  headers.set('Access-Control-Expose-Headers', 'Server-Timing');   // 2026-10-30 葵: /gemini-tts の計測値をアプリが読めるように
   headers.set('Access-Control-Max-Age', '86400');
   return new Response(response.body, {
     status: response.status,
