@@ -5,6 +5,7 @@
 //   - 許可モデル2種・許可声30種・text 1500字・style 200字まで。シークレットは既存の env.GEMINI_API_KEY
 //   - 上流は POST /v1beta/interactions（ヘッダ x-goog-api-key）。応答の最後の audio ブロックを audio/wav で返す
 //   - 再試行しない・タイムアウト60秒。上流エラーは定型文＋upstream_status のみ（401/403 は 502）
+// v1.1 2026-10-30 - 葵(Aoi): 計測用に Server-Timing: upstream;dur=<ms>（上流fetch開始〜応答JSON読了）を付与。挙動は無変更
 import { jsonError } from './utils.js';
 
 // 出典: ai.google.dev/gemini-api/docs/speech-generation（2026-10-28閲覧）。増減はここだけ
@@ -97,6 +98,8 @@ export async function relayGeminiTTS(request, env) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TTS_TIMEOUT_MS);
   let res;
+  const t0 = Date.now();
+  const timing = () => `upstream;dur=${Date.now() - t0}`;
   try {
     res = await fetch(TTS_ENDPOINT, {
       method: 'POST',
@@ -109,9 +112,10 @@ export async function relayGeminiTTS(request, env) {
     return jsonError(e && e.name === 'AbortError' ? 'Gemini TTS upstream timeout' : 'Gemini TTS upstream unreachable', 504);
   }
   try {
-    if (!res.ok) return upstreamError(res.status);
+    if (!res.ok) { const e = upstreamError(res.status); e.headers.set('Server-Timing', timing()); return e; }
     let j;
     try { j = await res.json(); } catch { return jsonError('Gemini TTS upstream returned invalid JSON', 502); }
+    const st = timing();
     const b64 = lastAudioData(j);
     if (!b64) return jsonError('Gemini TTS upstream returned no audio', 502);
     if (b64.length > MAX_AUDIO_BYTES * 1.4) return jsonError('Gemini TTS audio too large', 502);
@@ -119,7 +123,7 @@ export async function relayGeminiTTS(request, env) {
     try { bytes = b64ToBytes(b64); } catch { return jsonError('Gemini TTS upstream returned invalid audio', 502); }
     if (bytes.length > MAX_AUDIO_BYTES) return jsonError('Gemini TTS audio too large', 502);
     return new Response(isRiff(bytes) ? bytes : wrapPcmAsWav(bytes), {
-      status: 200, headers: { 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store' },
+      status: 200, headers: { 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store', 'Server-Timing': st },
     });
   } finally { clearTimeout(timer); }
 }
