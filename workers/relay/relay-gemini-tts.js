@@ -6,6 +6,7 @@
 //   - 上流は POST /v1beta/interactions（ヘッダ x-goog-api-key）。応答の最後の audio ブロックを audio/wav で返す
 //   - 再試行しない・タイムアウト60秒。上流エラーは定型文＋upstream_status のみ（401/403 は 502）
 // v1.1 2026-10-30 - 葵(Aoi): 計測用に Server-Timing: upstream;dur=<ms>（上流fetch開始〜応答JSON読了）を付与。挙動は無変更
+// v1.2 2026-10-30 - 葵(Aoi): クロ検収§2 に沿い2つに分ける `upstream-ttfb;dur=<ヘッダ到着ms>, upstream;dur=<本文読了ms>`。504(timeout/unreachable)にも upstream を付ける
 import { jsonError } from './utils.js';
 
 // 出典: ai.google.dev/gemini-api/docs/speech-generation（2026-10-28閲覧）。増減はここだけ
@@ -99,7 +100,8 @@ export async function relayGeminiTTS(request, env) {
   const timer = setTimeout(() => ctrl.abort(), TTS_TIMEOUT_MS);
   let res;
   const t0 = Date.now();
-  const timing = () => `upstream;dur=${Date.now() - t0}`;
+  let ttfb = null; // 上流のヘッダが届くまで（≒Googleが音声を作り終えるまで）
+  const timing = () => `${ttfb == null ? '' : `upstream-ttfb;dur=${ttfb};desc="google headers", `}upstream;dur=${Date.now() - t0};desc="google total"`;
   try {
     res = await fetch(TTS_ENDPOINT, {
       method: 'POST',
@@ -107,9 +109,12 @@ export async function relayGeminiTTS(request, env) {
       body: JSON.stringify(payload),
       signal: ctrl.signal,
     });
+    ttfb = Date.now() - t0;
   } catch (e) {
     clearTimeout(timer);
-    return jsonError(e && e.name === 'AbortError' ? 'Gemini TTS upstream timeout' : 'Gemini TTS upstream unreachable', 504);
+    const r = jsonError(e && e.name === 'AbortError' ? 'Gemini TTS upstream timeout' : 'Gemini TTS upstream unreachable', 504);
+    r.headers.set('Server-Timing', timing());
+    return r;
   }
   try {
     if (!res.ok) { const e = upstreamError(res.status); e.headers.set('Server-Timing', timing()); return e; }
