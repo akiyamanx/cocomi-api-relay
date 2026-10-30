@@ -23,6 +23,7 @@
 // v3.0 2026-03-28 - 相談トピック連携: /consultation エンドポイント追加（claude.ai↔COCOMITalk会議室）
 // v3.1 2026-03-30 - Sprint 1代弁問題応急処置: /memory-recentにsisterカラム追加
 // v3.2 2026-04-10 - バックグラウンド会議: /consultation/auto-meeting エンドポイント追加（meeting.js）
+// v3.3 2026-10-30 - 葵(Aoi): /xai /kimi（relay-compat.js）と /gemini-tts（relay-gemini-tts.js）を追加。既存ルート・Origin/認証チェックは無変更
 
 import { handleMemory } from './memory.js';
 import { _rowToMemory } from './memory.js';
@@ -33,6 +34,9 @@ import { handleMemoryImport } from './import.js';
 import { handleGetConsultation, handlePostConsultation, handleResolveConsultation } from './consultation.js';
 // v3.2追加 - バックグラウンド三姉妹会議
 import { handleAutoMeeting } from './meeting.js';
+// v3.3追加 - xAI/Kimi中継（OpenAI互換）と Gemini TTS 中継
+import { relayXai, relayKimi } from './relay-compat.js';
+import { relayGeminiTTS } from './relay-gemini-tts.js';
 import {
   isAllowedOrigin, isAuthenticated, handleCORS,
   jsonResponse, jsonError, fetchWithRetry
@@ -173,6 +177,16 @@ export default {
         case 'tts-test':
         case 'tts':
           response = await relayTTS(request, env);
+          break;
+        // v3.3追加 - 新ルート（Origin/認証チェックの後・POSTのみ）
+        case 'gemini-tts':
+          response = await relayGeminiTTS(request, env);
+          break;
+        case 'xai':
+          response = await relayXai(request, env);
+          break;
+        case 'kimi':
+          response = await relayKimi(request, env);
           break;
         default:
           response = jsonError(`Unknown endpoint: /${path}`, 404);
