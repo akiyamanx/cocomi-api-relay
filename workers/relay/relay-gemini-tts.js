@@ -1,13 +1,15 @@
 // このファイルは何をするか:
 // /gemini-tts の中継。アプリ側 gemini-tts-provider.js（{ text, voice, model, style? } を送り WAV を受け取る）に合わせる。
-// 作成: 葵(Aoi) / 最終更新: 葵(Aoi), 2026-10-30
+// 作成: 葵(Aoi) / 最終更新: 葵(Aoi), 2026-10-31
 // v1.0 2026-10-30 - 新規作成（提案ドラフト relay-audio.js の /gemini-tts 部分を独立ファイル化。/whisper は変更しない）
-//   - 許可モデル2種・許可声30種・text 1500字・style 200字まで。シークレットは既存の env.GEMINI_API_KEY
+//   - 許可モデル2種・許可声30種・text 1500字・style 200字まで。シークレットは env.GEMINI_TTS_API_KEY（無ければ env.GEMINI_API_KEY）
 //   - 上流は POST /v1beta/interactions（ヘッダ x-goog-api-key）。応答の最後の audio ブロックを audio/wav で返す
 //   - 再試行しない・タイムアウト60秒。上流エラーは定型文＋upstream_status のみ（401/403 は 502）
 // v1.1 2026-10-30 - 葵(Aoi): 計測用に Server-Timing: upstream;dur=<ms>（上流fetch開始〜応答JSON読了）を付与。挙動は無変更
+// v1.3 2026-10-31 - 葵(Aoi): body.stream===true は relay-gemini-tts-stream.js（生PCM）へ。入力検証は readTTSRequest() に切り出して両方で共用（unary の挙動は無変更）
 // v1.2 2026-10-30 - 葵(Aoi): クロ検収§2 に沿い2つに分ける `upstream-ttfb;dur=<ヘッダ到着ms>, upstream;dur=<本文読了ms>`。504(timeout/unreachable)にも upstream を付ける
 import { jsonError } from './utils.js';
+import { relayGeminiTTSStream } from './relay-gemini-tts-stream.js';
 
 // 出典: ai.google.dev/gemini-api/docs/speech-generation（2026-10-28閲覧）。増減はここだけ
 const TTS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
@@ -64,27 +66,40 @@ export function lastAudioData(j) {
   return data;
 }
 
-export async function relayGeminiTTS(request, env) {
-  if (!env.GEMINI_API_KEY) return jsonError('GEMINI_API_KEY is not configured', 500);
+// 読み上げ専用の鍵（別プロジェクト）。無ければ従来の GEMINI_API_KEY。/gemini は従来の鍵のまま
+export const ttsKey = (env) => env.GEMINI_TTS_API_KEY || env.GEMINI_API_KEY;
+
+// 入力検証（unary と stream で共用）。OK なら { text, voice, model, style, stream }、だめなら { err: Response }
+export async function readTTSRequest(request) {
+  const fail = (m, st) => ({ err: jsonError(m, st) });
   const declared = Number(request.headers.get('Content-Length'));
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return jsonError('Request body too large', 413);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return fail('Request body too large', 413);
   let body;
   const raw = await request.text();
-  if (raw.length > MAX_BODY_BYTES) return jsonError('Request body too large', 413);   // Content-Lengthなし(chunked)でも効かせる
-  try { body = JSON.parse(raw); } catch { return jsonError('Invalid JSON body', 400); }
-  if (!isPlainObject(body)) return jsonError('Body must be a JSON object', 400);
+  if (raw.length > MAX_BODY_BYTES) return fail('Request body too large', 413);   // Content-Lengthなし(chunked)でも効かせる
+  try { body = JSON.parse(raw); } catch { return fail('Invalid JSON body', 400); }
+  if (!isPlainObject(body)) return fail('Body must be a JSON object', 400);
 
   const text = typeof body.text === 'string' ? body.text.trim() : '';
-  if (!text) return jsonError('text は必須です', 400);
-  if (text.length > MAX_TEXT) return jsonError(`text は${MAX_TEXT}文字以内にしてください`, 400);
-  if (typeof body.voice !== 'string' || !TTS_VOICES.has(body.voice)) return jsonError('voice is not allowed', 400);
+  if (!text) return fail('text は必須です', 400);
+  if (text.length > MAX_TEXT) return fail(`text は${MAX_TEXT}文字以内にしてください`, 400);
+  if (typeof body.voice !== 'string' || !TTS_VOICES.has(body.voice)) return fail('voice is not allowed', 400);
   const model = body.model == null ? DEFAULT_TTS_MODEL : body.model;
-  if (typeof model !== 'string' || !TTS_MODELS.has(model)) return jsonError('model is not allowed', 400);
+  if (typeof model !== 'string' || !TTS_MODELS.has(model)) return fail('model is not allowed', 400);
   let style = null;
   if (body.style != null) {
-    if (typeof body.style !== 'string' || body.style.length > MAX_STYLE) return jsonError(`style は${MAX_STYLE}文字以内の文字列です`, 400);
+    if (typeof body.style !== 'string' || body.style.length > MAX_STYLE) return fail(`style は${MAX_STYLE}文字以内の文字列です`, 400);
     style = body.style.trim() || null;
   }
+  return { text, voice: body.voice, model, style, stream: body.stream === true };
+}
+
+export async function relayGeminiTTS(request, env) {
+  if (!ttsKey(env)) return jsonError('GEMINI_TTS_API_KEY / GEMINI_API_KEY is not configured', 500);
+  const v = await readTTSRequest(request);
+  if (v.err) return v.err;
+  if (v.stream) return relayGeminiTTSStream(request, env, v);
+  const { text, model, style } = v; const body = { voice: v.voice };
 
   // text は読み上げる文そのもの（指示は入れない）。話し方は speech_metadata.style で渡す（公式）
   const part = { type: 'text', text };
@@ -105,7 +120,7 @@ export async function relayGeminiTTS(request, env) {
   try {
     res = await fetch(TTS_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ttsKey(env) },
       body: JSON.stringify(payload),
       signal: ctrl.signal,
     });

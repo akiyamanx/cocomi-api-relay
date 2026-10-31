@@ -23,6 +23,7 @@
 // v3.0 2026-03-28 - 相談トピック連携: /consultation エンドポイント追加（claude.ai↔COCOMITalk会議室）
 // v3.1 2026-03-30 - Sprint 1代弁問題応急処置: /memory-recentにsisterカラム追加
 // v3.2 2026-04-10 - バックグラウンド会議: /consultation/auto-meeting エンドポイント追加（meeting.js）
+// v3.4 2026-10-31 - 葵(Aoi): /gemini-tts に stream:true（生PCM, relay-gemini-tts-stream.js）。ルート表は無変更
 // v3.3 2026-10-30 - 葵(Aoi): /xai /kimi（relay-compat.js）と /gemini-tts（relay-gemini-tts.js）を追加。既存ルート・Origin/認証チェックは無変更
 
 import { handleMemory } from './memory.js';
