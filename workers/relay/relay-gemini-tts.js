@@ -2,7 +2,7 @@
 // /gemini-tts の中継。アプリ側 gemini-tts-provider.js（{ text, voice, model, style? } を送り WAV を受け取る）に合わせる。
 // 作成: 葵(Aoi) / 最終更新: 葵(Aoi), 2026-10-31
 // v1.0 2026-10-30 - 新規作成（提案ドラフト relay-audio.js の /gemini-tts 部分を独立ファイル化。/whisper は変更しない）
-//   - 許可モデル2種・許可声30種・text 1500字・style 200字まで。シークレットは既存の env.GEMINI_API_KEY
+//   - 許可モデル2種・許可声30種・text 1500字・style 200字まで。シークレットは env.GEMINI_TTS_API_KEY（無ければ env.GEMINI_API_KEY）
 //   - 上流は POST /v1beta/interactions（ヘッダ x-goog-api-key）。応答の最後の audio ブロックを audio/wav で返す
 //   - 再試行しない・タイムアウト60秒。上流エラーは定型文＋upstream_status のみ（401/403 は 502）
 // v1.1 2026-10-30 - 葵(Aoi): 計測用に Server-Timing: upstream;dur=<ms>（上流fetch開始〜応答JSON読了）を付与。挙動は無変更
@@ -66,6 +66,9 @@ export function lastAudioData(j) {
   return data;
 }
 
+// 読み上げ専用の鍵（別プロジェクト）。無ければ従来の GEMINI_API_KEY。/gemini は従来の鍵のまま
+export const ttsKey = (env) => env.GEMINI_TTS_API_KEY || env.GEMINI_API_KEY;
+
 // 入力検証（unary と stream で共用）。OK なら { text, voice, model, style, stream }、だめなら { err: Response }
 export async function readTTSRequest(request) {
   const fail = (m, st) => ({ err: jsonError(m, st) });
@@ -92,7 +95,7 @@ export async function readTTSRequest(request) {
 }
 
 export async function relayGeminiTTS(request, env) {
-  if (!env.GEMINI_API_KEY) return jsonError('GEMINI_API_KEY is not configured', 500);
+  if (!ttsKey(env)) return jsonError('GEMINI_TTS_API_KEY / GEMINI_API_KEY is not configured', 500);
   const v = await readTTSRequest(request);
   if (v.err) return v.err;
   if (v.stream) return relayGeminiTTSStream(request, env, v);
@@ -117,7 +120,7 @@ export async function relayGeminiTTS(request, env) {
   try {
     res = await fetch(TTS_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ttsKey(env) },
       body: JSON.stringify(payload),
       signal: ctrl.signal,
     });

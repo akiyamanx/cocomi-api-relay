@@ -2,13 +2,14 @@
 // /gemini-tts の「受け取りながら」版（body.stream===true の時だけ）。Google の streamGenerateContent(SSE) の音声を
 // 生PCM（audio/L16, 24kHz, mono, 16bit little-endian）のまま流す。入力検証は relay-gemini-tts.js の readTTSRequest() を共用
 // 作成: 葵(Aoi) / 最終更新: 葵(Aoi), 2026-10-31
+// v1.1 2026-10-31 - 鍵は ttsKey(env)（GEMINI_TTS_API_KEY 優先）。終了時ログ1行 tts-stream end why=... bytes=...（宿題②）
 // v1.0 2026-10-31 - 新規作成（クロ検収 §3 案A の Red 条件 1〜6 に沿う）
 //   - 上流: POST /v1beta/models/{model}:streamGenerateContent?alt=sse（ヘッダ x-goog-api-key）。再試行しない
 //   - 最初の音まで15秒（それまでは status 前なので定型JSON 504）／チャンク間の無音10秒＋全体120秒（以降は流れを閉じるだけ）
 //   - 合計8MBで上流を reader.cancel()。クライアント切断（request.signal / 返却 stream の cancel）で上流 fetch も止める
 //   - SSE は TextDecoder(stream) で改行まで貯める。base64 復号後のバイト数が奇数なら最後の1バイトを次へ持ち越す
 import { jsonError } from './utils.js';
-import { upstreamError } from './relay-gemini-tts.js';
+import { upstreamError, ttsKey } from './relay-gemini-tts.js';
 
 // 出典: ai.google.dev/gemini-api/docs/generate-content/speech-generation「Streaming speech generation」（2026-10-31閲覧）
 const STREAM_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
@@ -111,7 +112,7 @@ export async function relayGeminiTTSStream(request, env, v) {
   try {
     res = await fetch(`${STREAM_BASE}${encodeURIComponent(v.model)}:streamGenerateContent?alt=sse`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ttsKey(env) },
       body: JSON.stringify(buildStreamPayload(v)),
       signal: ctrl.signal,
     });
@@ -135,7 +136,13 @@ export async function relayGeminiTTSStream(request, env, v) {
   const tFirst = Date.now() - t0;
   armIdle();
 
-  let pending = first;
+  let pending = first, logged = false;
+  // 流れの終わりに1行だけ（why: done/client/capped/idle/timeout/error）。秘密は出さない
+  const logEnd = (r) => {
+    if (logged) return; logged = true;
+    const w = r === 'first' || r === 'total' ? 'timeout' : r;
+    console.log('tts-stream end why=' + w + ' bytes=' + pcm.total);
+  };
   const out = new ReadableStream({
     async pull(controller) {
       try {
@@ -144,13 +151,15 @@ export async function relayGeminiTTSStream(request, env, v) {
         if (chunk) { controller.enqueue(chunk); return; }
         clearAll();
         // 8MB上限で切った時は「途中で切れた」扱い（アプリ側 truncated）。普通に終わったら close
+        logEnd(pcm.capped ? 'capped' : 'done');
         if (pcm.capped) controller.error(new Error('audio too large')); else controller.close();
       } catch (e) {
         clearAll(); await pcm.cancel();
+        logEnd(why || 'error');
         controller.error(new Error(`stream ended: ${why || 'upstream'}`));   // status 200 は返し済み。流れを閉じるだけ
       }
     },
-    async cancel() { stop('client'); clearAll(); await pcm.cancel(); },   // アプリが停止→上流も止める
+    async cancel() { stop('client'); logEnd('client'); clearAll(); await pcm.cancel(); },   // アプリが停止→上流も止める
   });
   return new Response(out, {
     status: 200,

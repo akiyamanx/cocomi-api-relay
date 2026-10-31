@@ -5,6 +5,7 @@
 name = "cocomi-api-relay"
 main = "index.js"
 compatibility_date = "2026-03-07"
+compatibility_flags = ["enable_request_signal"]
 
 [vars]
 ALLOWED_ORIGIN = "https://akiyamanx.github.io"

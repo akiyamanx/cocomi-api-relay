@@ -1,5 +1,5 @@
 // このファイルは何をするか: /xai /kimi /gemini-tts 中継の単体テスト（node --test。上流fetchは全部モック・実APIには繋がない）
-// 作成: 葵(Aoi) / 最終更新: 葵(Aoi), 2026-10-30
+// 作成: 葵(Aoi) / 最終更新: 葵(Aoi), 2026-10-31
 // 実行: node --test workers/relay/test/
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -179,4 +179,19 @@ test('/gemini-tts: 上流に届かない時は504＋upstream の時間だけ', a
 test('未知のパスは従来どおり404', async () => {
   const r = await worker.fetch(req('/nope', {}), ENV);
   assert.equal(r.status, 404);
+});
+
+// ---- 読み上げ専用の鍵 ----
+test('GEMINI_TTS_API_KEY があれば /gemini-tts はそれを使い、/gemini は GEMINI_API_KEY のまま', async () => {
+  const env = { ...ENV, GEMINI_TTS_API_KEY: 'tk' };
+  mockFetch(() => new Response(JSON.stringify({ steps: [{ content: [{ type: 'audio', data: wavB64() }] }] }), { status: 200 }));
+  const r = await worker.fetch(req('/gemini-tts', { text: 'こんにちは', voice: 'Kore' }), env);
+  assert.equal(r.status, 200);
+  assert.equal(calls[0].opts.headers['x-goog-api-key'], 'tk');
+  calls = [];
+  mockFetch(() => new Response(JSON.stringify({ candidates: [] }), { status: 200 }));
+  await worker.fetch(req('/gemini', { contents: [{ parts: [{ text: 'hi' }] }] }), env);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /key=gk/);
+  assert.doesNotMatch(calls[0].url, /tk/);
 });
